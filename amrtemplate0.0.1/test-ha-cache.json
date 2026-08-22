@@ -1,0 +1,21 @@
+{
+  "type": "instance",
+  "request_type": "create",
+  "environment": "dev",
+  "requested_by": "platform-team",
+  "instance": {
+    "name": "test-ha-cache",
+    "deployment_topology": "HA",
+    "node_type": "Balanced_B0",
+    "persistence": {
+      "mode": "AOF"
+    },
+    "application_id": "platform-demo",
+    "lob": "cc-0002",
+    "tags": {
+      "pod": "team-alpha",
+      "cost-optimization": "enabled"
+    },
+    "deletion_protection_enabled": false
+  }
+}

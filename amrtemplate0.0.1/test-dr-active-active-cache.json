@@ -1,0 +1,14 @@
+{
+  "type": "instance",
+  "request_type": "create",
+  "environment": "dev",
+  "requested_by": "platform-team",
+  "instance": {
+    "name": "test-dr-aa-cache",
+    "deployment_topology": "DR-ActiveActive",
+    "node_type": "Balanced_B0",
+    "application_id": "platform-demo",
+    "lob": "cc-0004",
+    "deletion_protection_enabled": false
+  }
+}
