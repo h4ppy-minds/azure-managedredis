@@ -1,219 +1,106 @@
-# Terraform Module: Azure Managed Redis (instance)
+# Azure Managed Redis — Onboarding Root
 
-Single, reusable Terraform module for an
-[Azure Managed Redis](https://learn.microsoft.com/en-us/azure/redis/) (Redis
-Enterprise-based) instance — sizing, HA/clustering, persistence, auth mode,
-private networking (endpoint + DNS zone), deletion protection, and optional
-DR with active-active geo-replication.
+Self-service onboarding for the Azure Managed Redis Terraform module. One
+JSON file per instance, one PR per request, no shared file to
+merge-conflict over — same pattern as the Valkey onboarding root, adapted
+to Azure.
 
-Current module version: **4.0.0** — see [CHANGELOG.md](./CHANGELOG.md).
+Paired with redis module **v0.2.0** — see that module's CHANGELOG for the
+breaking changes this template's `v2` was updated against.
 
-## This module does not configure the azurerm provider
+## How it works
 
-There is no `provider "azurerm" {}` block anywhere in this module. A
-reusable module should never dictate auth or subscription context to its
-caller — that's the root module's job. See `examples/` for where the
-provider block belongs instead.
+1. **`config/onboarding-files-redis/default.json`** — global technical
+   defaults, plus a `environments.<env>` block per environment
+   (subscription, resource group, location, VNet/subnet, DR VNet/subnet).
+   Maintained by the platform team, not by requesters. **Field names in
+   this JSON are unchanged snake_case** (`deployment_topology`,
+   `node_type`, etc.) — the kebab-case rename below is scoped to the
+   Terraform variable/output surface only, not the request-file schema.
+2. **`config/onboarding-files-redis/*.json`** (everything except
+   `default.json`) — one file per onboarding request. A team opens a PR
+   adding or editing exactly one file.
+3. **`locals.tf`** merges default.json + the matching `environments.<env>`
+   block + each request file, field by field, into a staging map whose
+   keys match the redis module's kebab-case variable names 1:1 — then
+   derives `dr-location` (from `dr_region_pairs`) and `tags`.
+4. **`main.tf`** calls `module "redis"` once per resulting instance via
+   `for_each`, passing that staging map through almost verbatim.
 
-## No submodules
+`terraform plan -var env=dev` (or `qa`/`uat`/`prod`) picks up every
+request file targeting that environment automatically.
 
-Everything in this module lives in this one directory. The primary and
-(optional) DR instance are two explicit `azurerm_managed_redis` resource
-blocks in `main.tf`, not two calls into a shared internal module.
+## Naming convention: kebab-case Terraform surface, unchanged JSON schema
 
-## deployment_topology is the single knob for topology
+The redis module's variables and outputs are all kebab-case as of v5.0.0
+(`resource-group-name`, `node-type`, `redis-primary-id`, ...). This
+template's own `locals.tf` Layer 3 builds a staging map with matching
+kebab-case keys, so `main.tf`'s module call is close to a pass-through.
 
-```
-deployment_topology = "STANDALONE" | "HA" | "DR-ActivePassive" | "DR-ActiveActive"
-```
+**Request-file JSON field names are deliberately NOT renamed** — they stay
+`deployment_topology`, `node_type`, etc. Renaming those would ripple into
+the wrapper-API mapping docs and every existing request file for no real
+benefit; the translation from snake_case JSON to kebab-case Terraform
+happens once, inside `locals.tf`, and nowhere else needs to know about it.
 
-There is no separate `high_availability_enabled`-as-a-toggle or `prod_mode`
-variable driving HA/clustering/DR independently — this module's prior
-version had exactly that (`prod_mode` + environment-driven HA) and it could
-disagree with itself. `deployment_topology` alone now drives all of it, via
-`local.defaults.topology_profile` in `all-locals.tf`:
+## Every instance gets a private endpoint — no toggle, no DNS zone
 
-| `deployment_topology` | HA | Clustering | DR instance | Live geo-replication |
-|---|---|---|---|---|
-| `STANDALONE` | off | `NoCluster` | no | no |
-| `HA` | on | `OSSCluster` | no | no |
-| `DR-ActivePassive` | on | `OSSCluster` | yes | no |
-| `DR-ActiveActive` | on | `OSSCluster` | yes | yes |
+The redis module (v0.2.0) always creates a private endpoint for every
+instance — primary unconditionally, DR whenever the topology creates one.
+There's no `create_private_endpoint`-equivalent request field, and none is
+needed. **The module also no longer creates or links a private DNS
+zone** — DNS resolution for these private endpoints is handled by
+infrastructure automation outside Terraform (Infoblox). This template has
+no DNS-related resources of its own either.
 
-`environment` (`dev`/`qa`/`uat`/`prod`) still exists, but only for naming
-and the per-environment `node_type` default — it no longer gates HA, DR, or
-clustering. You can run `deployment_topology = "DR-ActiveActive"` in `dev`
-if you genuinely need to (e.g. testing failover), though the
-`prod_should_not_be_standalone` check exists specifically to flag the
-opposite, more common mistake: `environment = prod` left at `STANDALONE`.
+Because DR private endpoints are no longer optional, `dr_networking` in
+`default.json` is now effectively **required** for any environment where
+a `DR-*` topology will be requested — an environment missing it will fail
+plan (via the module's own checks) the first time someone submits a
+`DR-ActivePassive`/`DR-ActiveActive` request there, rather than silently
+creating a DR instance with no private endpoint the way earlier versions
+did.
 
-### DR-ActiveActive vs. DR-ActivePassive
+## Tags are preserved across updates (module-level, not template-level)
 
-- **`DR-ActiveActive`**: primary and DR are linked with
-  `azurerm_managed_redis_geo_replication`, giving live, bidirectional
-  replication. Azure does **not** allow persistence on a geo-replicated
-  database, so `persistence_mode` is automatically forced to `DISABLED` in
-  this mode — the `persistence_disabled_for_active_active` check warns you
-  at plan time.
-- **`DR-ActivePassive`**: a DR instance is still provisioned, but Azure
-  Managed Redis has no native "passive replica" concept — there is
-  currently no first-class way to get Azure to continuously stream data
-  into a non-geo-replicated standby. DR is a **standalone instance** you
-  keep in sync yourself (scheduled RDB/AOF export-import, or a secondary
-  write path from your application/CI). This is a limitation of the
-  underlying Azure service, not something Terraform can work around.
+The redis module sets `lifecycle { ignore_changes = [tags] }` on every
+taggable resource. This template's Layer 4 tag computation
+(`local.redis[...].tags`) therefore only actually takes effect on an
+instance's **first** apply — changing `application_id`/`lob`/`tags` in an
+existing request file and resubmitting will not update that instance's
+tags on Azure. See the module's README "Tags are preserved across
+updates" for the full tradeoff and the manual workaround.
 
-## node_type (renamed from sku_name)
+## Request file shape
 
-This module's public input is `node_type`, not `sku_name`, to match the
-naming this repo's GCP sibling module (`terraform-google-h4ppy-memorystore-valkey`)
-uses for the same concept. Underneath, `main.tf` maps it directly onto the
-`azurerm_managed_redis` resource's own `sku_name` argument — that's the
-provider's fixed schema name, not renameable; only this module's
-public-facing variable is renamed.
+See [`config/redis-intake-schema.json`](./config/redis-intake-schema.json)
+for the full reference. Four working examples are in
+[`config/onboarding-files-redis/`](./config/onboarding-files-redis/), one
+per `deployment_topology`:
 
-## Auth mode & TLS
-
-`client_protocol` is locked to `Encrypted` — no override accepted, same
-mandatory-not-default stance as the GCP sibling module takes on
-`transit_encryption_mode`.
-
-`authorization_mode` (`AccessKey` | `MicrosoftEntraID`), by contrast, **is**
-a real, overridable choice here — unlike the GCP module's
-`authorization_mode`, which only ever accepts one value. That difference is
-deliberate: GCP's provider can fully automate IAM role bindings for
-`IAM_AUTH`; the azurerm provider cannot yet automate the equivalent
-Microsoft Entra ID data-plane grant for Managed Redis (see
-[hashicorp/terraform-provider-azurerm#30938](https://github.com/hashicorp/terraform-provider-azurerm/issues/30938)).
-Locking this module to `MicrosoftEntraID`-only today would mean no client
-could ever connect without a manual, undocumented-by-Terraform step. So:
-
-- Default is `AccessKey` — fully functional through Terraform alone.
-- `MicrosoftEntraID` is available, sets
-  `access_keys_authentication_enabled = false`, but requires you to grant
-  specific principals data-plane access out-of-band (Portal/CLI) — the
-  `entra_id_auth_requires_manual_grant` check exists to flag this, not to
-  block it.
-
-Revisit this once azurerm supports the Entra ID grant natively.
-
-## Persistence
-
-```hcl
-persistence_mode          = "RDB"   # or "AOF" or "DISABLED" (default)
-persistence_rdb_frequency = "12h"   # 1h | 6h | 12h
-persistence_aof_frequency = "1s"    # always | 1s
-```
-
-Mirrors the GCP sibling module's `persistence_mode` naming and 3-way enum
-exactly. Applied identically to the primary and DR default databases.
-Automatically forced to `DISABLED` when `deployment_topology =
-DR-ActiveActive` — check the `persistence_mode` output to confirm what
-actually got applied.
-
-> Data persistence protects against node failure; it is **not** a
-> substitute for point-in-time backups. See
-> [Microsoft's persistence guidance](https://learn.microsoft.com/en-us/azure/redis/how-to-persistence).
-
-## Deletion protection
-
-```hcl
-deletion_protection_enabled = true # default
-```
-
-Unlike GCP's `google_memorystore_instance`, `azurerm_managed_redis` has
-**no `deletion_protection_enabled` argument of its own**. This module's
-equivalent is an `azurerm_management_lock` (`CanNotDelete`) applied to the
-primary (and DR, if present) instance in `main.tf` — a separate resource,
-not an inline flag, but it blocks deletion via Portal/CLI/API/Terraform
-alike for anyone without `Microsoft.Authorization/locks/delete` on that
-scope. Functionally equivalent protection to GCP's version; mechanically
-different because that's what Azure actually offers here.
-
-**Operational note:** because the lock blocks *any* delete, it also blocks
-Terraform's delete-then-create for changes that force replacement (e.g.
-changing `node_type`). If you need to make one of those changes, set
-`deletion_protection_enabled = false`, apply, make the change, then set it
-back to `true`.
-
-## Tags
-
-`tags` (`map(string)`, default `{}`) is applied to every resource this
-module creates: both Redis instances, the private endpoint(s), the private
-DNS zone and its VNet link, and the deletion-protection lock(s).
-
-## Structure
-
-| File | Contents |
+| File | `deployment_topology` |
 |---|---|
-| `versions.tf` | `required_providers` only — no `provider "azurerm" {}` block |
-| `variables.tf` | Every instance variable, plus every cross-field `check` block, checked against effective values |
-| `all-locals.tf` | **The** file to edit for defaults (topology, per-environment sizing, auth, persistence, networking, deletion protection). `local.defaults` map, effective-value locals, and derived logic |
-| `data.tf` | Subnet lookup, only queried when `subnet_id` isn't supplied directly |
-| `main.tf` | The primary `azurerm_managed_redis`, an optional `dr`, and the deletion-protection `azurerm_management_lock`(s) |
-| `geo-replication.tf` | `azurerm_managed_redis_geo_replication`, only for `deployment_topology = DR-ActiveActive` |
-| `network.tf` | Private DNS zone + VNet link + private endpoint(s) |
-| `outputs.tf` | Instance identity, topology/persistence/auth status, networking outputs |
+| `test-standalone-cache.json` | `STANDALONE` |
+| `test-ha-cache.json` | `HA` |
+| `test-dr-active-passive-cache.json` | `DR-ActivePassive` |
+| `test-dr-active-active-cache.json` | `DR-ActiveActive` |
 
-## Usage
+## DR region pairs
 
-```hcl
-provider "azurerm" {
-  features {}
-  subscription_id = var.subscription_id
-}
+Cross-region DR is only supported between the pairs listed in
+`default.json`'s `dr_region_pairs` — currently `eastus2 <-> centralus`.
+Requesting DR from an unpaired `location` fails plan with a clear error
+(`dr-requires-supported-region-pair` check).
 
-module "redis" {
-  source = "./"
+## Uniqueness is enforced, not just documented
 
-  name                 = "cfes-amr"
-  location             = "eastus2"
-  resource_group_name  = "cfes-amr-eastus2-prod-rg"
-  environment          = "prod"
-  deployment_topology  = "DR-ActiveActive"
-  dr_location          = "centralus"
+The `request-names-unique-per-environment` check block fails plan if two
+files targeting the same environment share an `instance.name`.
 
-  subnet_id = "/subscriptions/.../subnets/cfes-amr-eastus2-prod-snet"
-  vnet_id   = "/subscriptions/.../virtualNetworks/az3-cfes-eastus2-prod-vnet"
+## Running it
 
-  tags = {
-    costcenter = "cfes"
-  }
-}
+```powershell
+terraform init
+terraform plan -var env=dev
+terraform apply -var env=dev
 ```
-
-See [`examples/`](./examples) for a `STANDALONE` dev config using
-name-based subnet lookup, and a `DR-ActiveActive` prod config.
-
-## Known limitations
-
-- No native "passive" (non-geo-replicated) live replication target in Azure
-  Managed Redis today — see DR-ActiveActive vs. DR-ActivePassive above.
-- `MicrosoftEntraID` authorization mode requires an out-of-band data-plane
-  grant not automatable by this module today — see "Auth mode & TLS."
-- `deletion_protection_enabled = true` blocks any change that forces
-  resource replacement (e.g. `node_type`) until temporarily disabled — see
-  "Deletion protection."
-- `redis_primary_access_key` output's attribute path is inferred from the
-  sibling `azurerm_managed_redis` data source's documented shape; confirm
-  it against your installed provider version before depending on it in
-  automation.
-- No diagnostic settings / Log Analytics wiring yet (see Roadmap).
-- No customer-managed key (CMK) encryption support yet.
-- `node_type` changes force replacement of the instance (Azure API
-  behavior, confirmed against the provider's own issue tracker — not a
-  module limitation).
-
-## Roadmap
-
-- [ ] Diagnostic settings → Log Analytics / Event Hub
-- [ ] Customer-managed key (CMK) encryption
-- [ ] Automate the Entra ID data-plane grant once azurerm supports it, and
-      reconsider whether `authorization_mode` should default to
-      `MicrosoftEntraID` at that point
-- [ ] Optional automated RDB/AOF export-import scheduling for
-      DR-ActivePassive
-- [ ] Consider splitting alerting into its own module the way the GCP
-      Valkey module split `terraform-google-valkey-alerts` out from the
-      instance module — not done yet, since there's no alerting in this
-      module at all today

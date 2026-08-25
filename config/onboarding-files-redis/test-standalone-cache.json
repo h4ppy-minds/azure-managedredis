@@ -8,7 +8,7 @@
     "deployment_topology": "STANDALONE",
     "node_type": "Balanced_B0",
     "application_id": "platform-demo",
-    "lob": "cc-0001",
+    "lob": "cfes",
     "deletion_protection_enabled": false
   }
 }

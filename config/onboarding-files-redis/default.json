@@ -1,8 +1,8 @@
 {
   "type": "redis-onboarding-defaults",
   "default_application_id": "azure-managed-redis",
-  "deployment_topology": "STANDALONE",
-  "node_type": "Balanced_B0",
+  "deployment_topology": "HA",
+  "node_type": "Balanced_B3",
   "authorization_mode": "AccessKey",
   "eviction_policy": "AllKeysLRU",
   "persistence": {
@@ -12,7 +12,10 @@
   },
   "deletion_protection_enabled": true,
   "dr_region_pairs": [
-    ["eastus2", "centralus"]
+    [
+      "eastus2",
+      "centralus"
+    ]
   ],
   "environments": {
     "dev": {

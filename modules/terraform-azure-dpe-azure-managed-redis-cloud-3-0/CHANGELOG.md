@@ -11,7 +11,111 @@ All notable changes to this module are documented here. Format follows
 - Customer-managed key (CMK) encryption support
 - Automate the Entra ID data-plane grant once azurerm supports it
 
-## [4.1.0] - 2026-08-22
+## [0.2.0] - 2026-08-22
+
+Directed change following senior leadership review. Every item below is
+breaking.
+
+### Changed — BREAKING
+- **Every variable and output renamed from snake_case to kebab-case**
+  (e.g. `resource_group_name` → `resource-group-name`, `node_type` →
+  `node-type`, `redis_primary_id` → `redis-primary-id`). Hyphens are
+  legal in HCL identifiers and were already this org's convention for
+  auth variables in earlier versions of this module (`usr-client-id`
+  etc.) — this extends that convention to every variable and output, and
+  (as an explicit style extension beyond what was directly requested,
+  flagged here for visibility) to internal locals in `all-locals.tf` too,
+  so there's one consistent naming style across the whole module rather
+  than a visible seam between "public" and "internal" names.
+  **Migration:** every caller must update every argument name in every
+  `module "redis" { ... }` block, and every `module.redis[...].<output>`
+  reference. This is the module's biggest-blast-radius change to date —
+  budget real review time for it, not a find/replace.
+- **`node-type` (renamed from `sku_name`/`node_type`) is now a required
+  variable with no default.** Previously it defaulted to a
+  per-environment value (`local.defaults.environment_profile[...]
+  .node_type`) when left unset. That whole per-environment default table
+  is removed — the caller (an onboarding template, typically) must always
+  supply `node-type` explicitly, reflecting a decision that instance
+  sizing is a template/caller policy concern, not something this module
+  should silently default on its own. **Migration:** every caller must
+  now always pass `node-type`.
+- **A private endpoint is now unconditionally created for every
+  instance** — primary always, DR whenever the topology creates one.
+  **The `create_private_endpoint` variable is removed entirely** — there
+  is no opt-out any more. As a consequence, subnet info (`subnet-id`, or
+  the `subnet-name`/`vnet-name`/`vnet-resource-group-name` trio) is now
+  always required rather than only required when that toggle was left at
+  its default `true`. Likewise, DR subnet info is now **required**
+  whenever `deployment-topology` is a `DR-*` value — the DR private
+  endpoint used to be genuinely opt-in (DR instance created, endpoint
+  silently skipped without DR networking); it no longer is. **Migration:**
+  remove `create_private_endpoint` from every caller; ensure DR subnet
+  info is supplied wherever DR topologies are used, or the apply will now
+  fail a `lifecycle.precondition` where it previously would have quietly
+  skipped the DR endpoint.
+- **This module no longer creates or links a private DNS zone.**
+  `azurerm_private_dns_zone`, both
+  `azurerm_private_dns_zone_virtual_network_link` resources, and the
+  `private_dns_zone_group` block on both private endpoints are all
+  removed, along with the `create_private_dns_zone`,
+  `private_dns_zone_ids`, `private_dns_zone_vnet_link_enabled`, `vnet_id`,
+  and `dr_vnet_id` variables, `data.azurerm_virtual_network.vnet`/
+  `.dr_vnet`, and the `private_dns_zone_link_requires_vnet_id`/
+  `dr_private_dns_zone_link_requires_vnet_id` checks. DNS resolution for
+  these private endpoints is now handled entirely by infrastructure
+  automation outside this module (Infoblox) — see README "DNS is not this
+  module's job." **Migration:** remove every DNS-related argument from
+  every caller. If your environment does NOT actually have Infoblox (or
+  equivalent) automation wired up yet, do not upgrade to this version
+  until it does — private endpoints created without any DNS mechanism
+  will not resolve for clients.
+- **Tags are now preserved across updates.** Every taggable resource
+  (`azurerm_managed_redis.primary`, `.dr`, `azurerm_private_endpoint
+  .primary`, `.dr`) now has `lifecycle { ignore_changes = [tags] }`. Tags
+  are set once, on first create, and never touched by any later apply —
+  protecting tags added by automation outside Terraform (Infoblox, a
+  governance/policy tool) from being reverted on the next apply/patch.
+  **Real tradeoff, not just a safety net:** this also means changing
+  `tags` on an *existing* instance and re-applying will silently do
+  nothing — Terraform will show no diff for that attribute at all. If you
+  need to genuinely change an existing instance's tags going forward,
+  that now has to happen out-of-band (Azure Portal/CLI), or by
+  temporarily removing `ignore_changes = [tags]` for one apply.
+
+### Added
+- `redis-primary-port` / `redis-dr-port` outputs, reading
+  `default_database[0].port` (confirmed against the provider's own
+  schema — typically `10000` for Managed Redis, but always read from the
+  real output rather than assumed).
+- `geo-replication-requires-supported-sku` check — `deployment-topology =
+  DR-ActiveActive` requires a geo-replication-capable `node-type`
+  (`Balanced_B10`+ or an equivalent tier); smaller SKUs like
+  `Balanced_B0` are rejected by the Azure API with a much less
+  actionable error, this check catches it at plan time instead.
+- `dr-subnet-required` check (renamed and tightened from
+  `dr-subnet-inputs-complete`) — now fires whenever `create-dr` is true
+  and DR subnet info is missing entirely, not just when it's partially
+  supplied.
+
+### Removed
+- `create_private_endpoint`, `create_private_dns_zone`,
+  `private_dns_zone_ids`, `private_dns_zone_vnet_link_enabled`,
+  `vnet_id`, `dr_vnet_id` variables.
+- `azurerm_private_dns_zone`, both
+  `azurerm_private_dns_zone_virtual_network_link` resources.
+- `data.azurerm_virtual_network.vnet`, `data.azurerm_virtual_network
+  .dr_vnet`.
+- `private_dns_zone_link_requires_vnet_id`,
+  `dr_private_dns_zone_link_requires_vnet_id` checks.
+- `private-dns-zone-ids` output.
+- `local.defaults.environment_profile` (the per-environment `node_type`
+  default table) — `node-type` has no default any more.
+- `local.is_qa`, `local.is_uat` (dead code — nothing in this module
+  actually branches on them; only `is-prod` is used, by
+  `prod-should-not-be-standalone`).
+
+## [0.1.0] - 2026-08-22
 
 Bug-fix and DR-networking-completeness release found during live
 four-topology testing (STANDALONE / HA / DR-ActivePassive /
@@ -75,7 +179,7 @@ resources (was 5) and `DR-ActiveActive` produces 8 (was 6) — the DR
 private endpoint and DR-region DNS zone link that were silently missing
 before are now created.
 
-## [4.0.0] - 2026-08-22
+## [0.0.4] - 2026-08-22
 
 ### Changed — BREAKING
 - **`prod_mode` replaced by `deployment_topology`.** The single topology
@@ -155,12 +259,12 @@ before are now created.
   `environment == "prod"`.
 - `backup_enabled` output (replaced by `persistence_mode`).
 
-## [3.0.0] - 2026-08-22
+## [0.0.3] - 2026-08-22
 
 Restructures the module to match a reviewed pattern (single defaults file,
 effective-value locals, REQUIRED/OPTIONAL variable banners, cross-field
 `check` blocks, no in-module provider config). Behaviorally equivalent to
-`2.0.0` for every existing input **except** the provider/auth removal below,
+`0.0.2` for every existing input **except** the provider/auth removal below,
 which is breaking.
 
 ### Changed — BREAKING
@@ -174,19 +278,19 @@ which is breaking.
   `subscription_id` / `client_id` / `tenant_id` / `client_secret` to it)
   out of this module and into the root configuration that calls it. Nothing
   else needs to change — every other input/output is unchanged from
-  `2.0.0`.
+  `0.0.2`.
 - **`locals.tf` replaced by `all-locals.tf`.** All tunable defaults now live
   in a single `local.defaults` map (plus `local.defaults.environment_profile`
   for the per-environment sku/HA/clustering values previously spread across
   `main.tf`'s inline ternaries and the dead `dev_sku_name`/`qa_sku_name`/
-  `prod_sku_name` variables from `1.0.0`). See README "The 'one file for
+  `prod_sku_name` variables from `0.0.1`). See README "The 'one file for
   defaults' design."
 - **Every variable with a default now defaults to `null`** and resolves via
   `all-locals.tf`, rather than carrying a literal default in `variables.tf`.
-  Functionally equivalent to `2.0.0`'s literal defaults — this only changes
+  Functionally equivalent to `0.0.2`'s literal defaults — this only changes
   *where* the default value lives.
 - **`client_protocol` and `public_network_access` are no longer
-  independently tunable.** `2.0.0` allowed overriding them to `Plaintext` /
+  independently tunable.** `0.0.2` allowed overriding them to `Plaintext` /
   `Enabled`; validation now rejects both. See README "Network exposure and
   transit encryption are mandatory, not defaults." If you were relying on
   either override, this module is no longer the right fit for that use
@@ -218,7 +322,7 @@ which is breaking.
 - `locals.tf` and `validate.tf` (merged into `all-locals.tf` and
   `variables.tf` respectively).
 
-## [2.0.0] - 2026-08-22
+## [0.0.2] - 2026-08-22
 
 ### Added
 - Data persistence / backup support (`enable_backup`, `backup_method`,
@@ -261,7 +365,7 @@ which is breaking.
   that already existed but was previously unreachable (validation only
   allowed `dev`/`qa`/`prod`).
 - Split `providers.tf` into `versions.tf` (required_providers) and
-  `providers.tf` (provider block) — later removed entirely in `3.0.0`.
+  `providers.tf` (provider block) — later removed entirely in `0.0.3`.
 - `outputs.tf`: the previously-unnamed private DNS zone output is now named
   `private_dns_zone_ids` (plural, list) to also support the bring-your-own
   zone case.
@@ -285,10 +389,10 @@ which is breaking.
   supported on geo-replicated databases) that the previous version had no
   awareness of.
 
-## [1.0.0] - undated (initial working prototype)
+## [0.0.1] - undated (initial working prototype)
 
 Initial hardcoded proof-of-concept, captured from the working build referenced
-during the `2.0.0` refactor:
+during the `0.0.2` refactor:
 
 - Single environment's subnet/VNet/resource group names hardcoded in
   `locals.tf`.
@@ -301,4 +405,4 @@ during the `2.0.0` refactor:
 - `high_availability_enabled` typed as `string`.
 - `provider "azurerm" {}` configured inline in the module, authenticated via
   `usr-client-id` / `usr-client-secret` / `usr-tenant-id` /
-  `usr-subscription-id` variables (removed in `3.0.0`).
+  `usr-subscription-id` variables (removed in `0.0.3`).
