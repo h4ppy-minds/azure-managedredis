@@ -11,7 +11,42 @@ All notable changes to this module are documented here. Format follows
 - Customer-managed key (CMK) encryption support
 - Automate the Entra ID data-plane grant once azurerm supports it
 
-## [0.2.0] - 2026-08-22
+## [5.2.0] - 2026-08-25
+
+### Added
+- **`dr-resource-group-name` variable.** DR's `azurerm_managed_redis` and
+  its private endpoint now support living in a resource group separate
+  from the primary's, following standard Azure resource-group design
+  guidance (Cloud Adoption Framework) — one resource group per region is
+  the recommended production pattern, since a resource group is Azure's
+  basic blast-radius/RBAC-scoping boundary, and a DR resource logically
+  tied to the same resource group as the region it exists to survive
+  undermines the point of region independence. Defaults to
+  `resource-group-name` (the old shared behavior) when left unset, so
+  this is purely additive — no existing caller needs to change anything.
+  See the variable's own description in `variables.tf` for the full
+  rationale.
+
+## [5.1.0] - 2026-08-25
+
+Bug fix found during integration testing (flagged by Siva Rajadurai).
+
+### Fixed
+- **Both `azurerm_private_endpoint` resources now `ignore_changes` on
+  `private_dns_zone_group`, not just `tags`.** Infoblox attaches a
+  `private_dns_zone_group` to each private endpoint out-of-band, after
+  Terraform creates it — the same class of problem tag-preservation
+  already solved for `tags` in v5.0.0, just for a second field we hadn't
+  covered yet. Without this, every `plan` saw Infoblox's attachment as
+  drift (since this module declares no `private_dns_zone_group` block at
+  all) and proposed removing it — fighting the external DNS automation on
+  every single apply. This was blocking integration testing entirely.
+  **Migration:** add `private_dns_zone_group` to the existing
+  `ignore_changes` list on both `azurerm_private_endpoint.primary` and
+  `.dr` in `network.tf`. No variable or interface changes — this is a
+  drop-in patch.
+
+## [5.0.0] - 2026-08-22
 
 Directed change following senior leadership review. Every item below is
 breaking.
@@ -115,7 +150,7 @@ breaking.
   actually branches on them; only `is-prod` is used, by
   `prod-should-not-be-standalone`).
 
-## [0.1.0] - 2026-08-22
+## [4.1.0] - 2026-08-22
 
 Bug-fix and DR-networking-completeness release found during live
 four-topology testing (STANDALONE / HA / DR-ActivePassive /
@@ -179,7 +214,7 @@ resources (was 5) and `DR-ActiveActive` produces 8 (was 6) — the DR
 private endpoint and DR-region DNS zone link that were silently missing
 before are now created.
 
-## [0.0.4] - 2026-08-22
+## [4.0.0] - 2026-08-22
 
 ### Changed — BREAKING
 - **`prod_mode` replaced by `deployment_topology`.** The single topology
@@ -259,12 +294,12 @@ before are now created.
   `environment == "prod"`.
 - `backup_enabled` output (replaced by `persistence_mode`).
 
-## [0.0.3] - 2026-08-22
+## [3.0.0] - 2026-08-22
 
 Restructures the module to match a reviewed pattern (single defaults file,
 effective-value locals, REQUIRED/OPTIONAL variable banners, cross-field
 `check` blocks, no in-module provider config). Behaviorally equivalent to
-`0.0.2` for every existing input **except** the provider/auth removal below,
+`2.0.0` for every existing input **except** the provider/auth removal below,
 which is breaking.
 
 ### Changed — BREAKING
@@ -278,19 +313,19 @@ which is breaking.
   `subscription_id` / `client_id` / `tenant_id` / `client_secret` to it)
   out of this module and into the root configuration that calls it. Nothing
   else needs to change — every other input/output is unchanged from
-  `0.0.2`.
+  `2.0.0`.
 - **`locals.tf` replaced by `all-locals.tf`.** All tunable defaults now live
   in a single `local.defaults` map (plus `local.defaults.environment_profile`
   for the per-environment sku/HA/clustering values previously spread across
   `main.tf`'s inline ternaries and the dead `dev_sku_name`/`qa_sku_name`/
-  `prod_sku_name` variables from `0.0.1`). See README "The 'one file for
+  `prod_sku_name` variables from `1.0.0`). See README "The 'one file for
   defaults' design."
 - **Every variable with a default now defaults to `null`** and resolves via
   `all-locals.tf`, rather than carrying a literal default in `variables.tf`.
-  Functionally equivalent to `0.0.2`'s literal defaults — this only changes
+  Functionally equivalent to `2.0.0`'s literal defaults — this only changes
   *where* the default value lives.
 - **`client_protocol` and `public_network_access` are no longer
-  independently tunable.** `0.0.2` allowed overriding them to `Plaintext` /
+  independently tunable.** `2.0.0` allowed overriding them to `Plaintext` /
   `Enabled`; validation now rejects both. See README "Network exposure and
   transit encryption are mandatory, not defaults." If you were relying on
   either override, this module is no longer the right fit for that use
@@ -322,7 +357,7 @@ which is breaking.
 - `locals.tf` and `validate.tf` (merged into `all-locals.tf` and
   `variables.tf` respectively).
 
-## [0.0.2] - 2026-08-22
+## [2.0.0] - 2026-08-22
 
 ### Added
 - Data persistence / backup support (`enable_backup`, `backup_method`,
@@ -365,7 +400,7 @@ which is breaking.
   that already existed but was previously unreachable (validation only
   allowed `dev`/`qa`/`prod`).
 - Split `providers.tf` into `versions.tf` (required_providers) and
-  `providers.tf` (provider block) — later removed entirely in `0.0.3`.
+  `providers.tf` (provider block) — later removed entirely in `3.0.0`.
 - `outputs.tf`: the previously-unnamed private DNS zone output is now named
   `private_dns_zone_ids` (plural, list) to also support the bring-your-own
   zone case.
@@ -389,10 +424,10 @@ which is breaking.
   supported on geo-replicated databases) that the previous version had no
   awareness of.
 
-## [0.0.1] - undated (initial working prototype)
+## [1.0.0] - undated (initial working prototype)
 
 Initial hardcoded proof-of-concept, captured from the working build referenced
-during the `0.0.2` refactor:
+during the `2.0.0` refactor:
 
 - Single environment's subnet/VNet/resource group names hardcoded in
   `locals.tf`.
@@ -405,4 +440,4 @@ during the `0.0.2` refactor:
 - `high_availability_enabled` typed as `string`.
 - `provider "azurerm" {}` configured inline in the module, authenticated via
   `usr-client-id` / `usr-client-secret` / `usr-tenant-id` /
-  `usr-subscription-id` variables (removed in `0.0.3`).
+  `usr-subscription-id` variables (removed in `3.0.0`).

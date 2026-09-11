@@ -1,11 +1,16 @@
 ############################################
 # Private endpoints.
 #
-# This module does NOT create or link a private DNS zone (removed in
-# v5.0.0). DNS resolution for these private endpoints is handled by
-# infrastructure automation outside this module (Infoblox) — see README
-# "DNS is not this module's job." There is accordingly no
-# private_dns_zone_group block on either endpoint below.
+# This module does NOT create or link a private DNS zone itself (removed
+# in v5.0.0) — DNS resolution for these private endpoints is handled by
+# infrastructure automation outside this module (Infoblox). That
+# automation attaches a private_dns_zone_group to each endpoint AFTER
+# Terraform creates it — out-of-band, not through this config. Both
+# endpoints below therefore ignore_changes on private_dns_zone_group:
+# without that, every plan would see Infoblox's attachment as drift from
+# "no private_dns_zone_group block declared here" and try to remove it,
+# fighting the external automation on every single apply. (Bug found
+# during integration testing — v5.1.0.)
 #
 # A private endpoint is ALWAYS created for every instance — primary
 # unconditionally, DR whenever the topology has one. There is no toggle
@@ -28,7 +33,11 @@ resource "azurerm_private_endpoint" "primary" {
   }
 
   lifecycle {
-    ignore_changes = [tags] # see main.tf's note on tag preservation
+    # tags: see main.tf's note on tag preservation.
+    # private_dns_zone_group: Infoblox attaches this out-of-band after
+    # create — without ignoring it, every plan tries to remove what
+    # Infoblox just set up.
+    ignore_changes = [tags, private_dns_zone_group]
 
     precondition {
       condition     = local.valid-subnet-for-private-endpoint
@@ -42,7 +51,7 @@ resource "azurerm_private_endpoint" "dr" {
 
   name                = "pe-${var.name}-${local.environment}-dr"
   location            = coalesce(var.dr-location, var.location)
-  resource_group_name = var.resource-group-name
+  resource_group_name = local.dr-resource-group-name
   subnet_id           = local.dr-subnet-id
   tags                = local.tags
 
@@ -54,7 +63,7 @@ resource "azurerm_private_endpoint" "dr" {
   }
 
   lifecycle {
-    ignore_changes = [tags] # see main.tf's note on tag preservation
+    ignore_changes = [tags, private_dns_zone_group]
 
     precondition {
       condition     = local.valid-dr-subnet-inputs

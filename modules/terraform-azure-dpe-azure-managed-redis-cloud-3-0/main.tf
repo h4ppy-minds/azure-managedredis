@@ -16,22 +16,22 @@
 ############################################
 
 resource "azurerm_managed_redis" "primary" {
-  name                       = "${var.name}-${local.environment}"
-  location                   = var.location
-  resource_group_name        = var.resource-group-name
-  high_availability_enabled  = local.high-availability-enabled
-  sku_name                   = var.node-type
-  public_network_access      = local.public-network-access
-  tags                       = local.tags
+  name                      = "${var.name}-${local.environment}"
+  location                  = var.location
+  resource_group_name       = var.resource-group-name
+  high_availability_enabled = local.high-availability-enabled
+  sku_name                  = var.node-type
+  public_network_access     = local.public-network-access
+  tags                      = local.tags
 
   default_database {
     clustering_policy                             = local.clustering-policy
-    client_protocol                                = local.client-protocol
-    eviction_policy                                = local.eviction-policy
-    access_keys_authentication_enabled             = local.access-keys-authentication-enabled
-    geo_replication_group_name                     = local.create-geo-replication ? var.geo-replication-group-name : null
-    persistence_redis_database_backup_frequency    = local.persistence-mode-effective == "RDB" ? local.persistence-rdb-frequency : null
-    persistence_append_only_file_backup_frequency  = local.persistence-mode-effective == "AOF" ? local.persistence-aof-frequency : null
+    client_protocol                               = local.client-protocol
+    eviction_policy                               = local.eviction-policy
+    access_keys_authentication_enabled            = local.access-keys-authentication-enabled
+    geo_replication_group_name                    = local.create-geo-replication ? var.geo-replication-group-name : null
+    persistence_redis_database_backup_frequency   = local.persistence-mode-effective == "RDB" ? local.persistence-rdb-frequency : null
+    persistence_append_only_file_backup_frequency = local.persistence-mode-effective == "AOF" ? local.persistence-aof-frequency : null
   }
 
   timeouts {
@@ -52,22 +52,22 @@ resource "azurerm_managed_redis" "primary" {
 resource "azurerm_managed_redis" "dr" {
   count = local.create-dr ? 1 : 0
 
-  name                       = "${var.name}-${local.environment}-dr"
-  location                   = coalesce(var.dr-location, var.location)
-  resource_group_name        = var.resource-group-name
-  high_availability_enabled  = local.high-availability-enabled
-  sku_name                   = var.node-type # must match the primary's node-type for geo-replication
-  public_network_access      = local.public-network-access
-  tags                       = local.tags
+  name                      = "${var.name}-${local.environment}-dr"
+  location                  = coalesce(var.dr-location, var.location)
+  resource_group_name       = local.dr-resource-group-name
+  high_availability_enabled = local.high-availability-enabled
+  sku_name                  = var.node-type # must match the primary's node-type for geo-replication
+  public_network_access     = local.public-network-access
+  tags                      = local.tags
 
   default_database {
     clustering_policy                             = local.clustering-policy
-    client_protocol                                = local.client-protocol
-    eviction_policy                                = local.eviction-policy
-    access_keys_authentication_enabled             = local.access-keys-authentication-enabled
-    geo_replication_group_name                     = local.create-geo-replication ? var.geo-replication-group-name : null
-    persistence_redis_database_backup_frequency    = local.persistence-mode-effective == "RDB" ? local.persistence-rdb-frequency : null
-    persistence_append_only_file_backup_frequency  = local.persistence-mode-effective == "AOF" ? local.persistence-aof-frequency : null
+    client_protocol                               = local.client-protocol
+    eviction_policy                               = local.eviction-policy
+    access_keys_authentication_enabled            = local.access-keys-authentication-enabled
+    geo_replication_group_name                    = local.create-geo-replication ? var.geo-replication-group-name : null
+    persistence_redis_database_backup_frequency   = local.persistence-mode-effective == "RDB" ? local.persistence-rdb-frequency : null
+    persistence_append_only_file_backup_frequency = local.persistence-mode-effective == "AOF" ? local.persistence-aof-frequency : null
   }
 
   timeouts {

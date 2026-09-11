@@ -63,7 +63,7 @@ locals {
 
     eviction-policy = "AllKeysLRU"
 
-    authorization-mode = "MicrosoftEntraID"
+    authorization-mode = "AccessKey"
 
     persistence-mode          = "DISABLED"
     persistence-rdb-frequency = "12h"
@@ -104,7 +104,7 @@ locals {
   client-protocol       = "Encrypted"
   public-network-access = "Disabled"
 
-  authorization-mode                 = coalesce(var.authorization-mode, local.defaults.authorization-mode)
+  authorization-mode = coalesce(var.authorization-mode, local.defaults.authorization-mode)
   access-keys-authentication-enabled = local.authorization-mode == "AccessKey"
 
   persistence-mode          = coalesce(var.persistence-mode, local.defaults.persistence-mode)
@@ -138,6 +138,11 @@ locals {
   subnet-id = coalesce(var.subnet-id, try(data.azurerm_subnet.subnet[0].id, null))
 
   dr-subnet-id = var.dr-subnet-id != null ? var.dr-subnet-id : try(data.azurerm_subnet.dr-subnet[0].id, null)
+
+  # Falls back to the primary's resource group only for backward
+  # compatibility — see the variable's own description for why a
+  # SEPARATE resource group per region is the production recommendation.
+  dr-resource-group-name = coalesce(var.dr-resource-group-name, var.resource-group-name)
 
   # --- Precondition helpers (see main.tf / network.tf lifecycle blocks) ---
   valid-subnet-for-private-endpoint = local.subnet-id != null

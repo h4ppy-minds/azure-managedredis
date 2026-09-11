@@ -91,6 +91,29 @@ variable "dr-location" {
 }
 
 # --- OPTIONAL ---
+variable "dr-resource-group-name" {
+  description = <<-EOT
+    Resource group for the DR instance and its private endpoint. Default
+    (when left null): falls back to resource-group-name — i.e. DR shares
+    the primary's resource group unless you explicitly separate them.
+
+    Production recommendation: use a SEPARATE resource group per region
+    (e.g. "cfes-amr-eastus2-prod-rg" for primary, "cfes-amr-centralus-prod-rg"
+    for DR) rather than the shared-RG default. This follows standard Azure
+    resource-group design guidance (Cloud Adoption Framework) — resource
+    groups are Azure's basic blast-radius/RBAC-scoping boundary, and a
+    disaster-recovery resource logically coupled to the SAME resource
+    group as the region it's meant to survive the loss of undermines the
+    point of region independence. The shared-RG default exists only for
+    backward compatibility with callers that haven't separated their
+    resource groups by region yet.
+  EOT
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+# --- OPTIONAL ---
 variable "geo-replication-group-name" {
   description = "Optional name override for the geo-replication group used by DR-ActiveActive. If null, Azure generates one. Only used when deployment-topology = DR-ActiveActive."
   type        = string
@@ -195,6 +218,11 @@ variable "node-type" {
 
   validation {
     condition = contains([
+      # Enterprise SKUs
+      "Enterprise_E1", "Enterprise_E5", "Enterprise_E10", "Enterprise_E20",
+      "Enterprise_E50", "Enterprise_E100", "Enterprise_E200", "Enterprise_E400",
+      # Enterprise Flash SKUs
+      "EnterpriseFlash_F300", "EnterpriseFlash_F700", "EnterpriseFlash_F1500",
       # Balanced SKUs
       "Balanced_B0", "Balanced_B1", "Balanced_B3", "Balanced_B5", "Balanced_B10",
       "Balanced_B20", "Balanced_B50", "Balanced_B100", "Balanced_B150",
@@ -255,30 +283,16 @@ variable "authorization-mode" {
   description = <<-EOT
     Client authentication mode, mapped onto default_database's real
     access_keys_authentication_enabled argument. Default (when left
--   null): AccessKey.
-+   null): MicrosoftEntraID.
-      AccessKey: access-key (password) authentication is enabled — the
-        conventional Redis AUTH flow. Fully usable end-to-end through
-        Terraform today.
-      MicrosoftEntraID: access-key authentication is disabled
-        (access_keys_authentication_enabled = false); clients must
-        authenticate via Microsoft Entra ID instead. ...
--   This module does not default to MicrosoftEntraID the way the GCP
--   sibling module hard-locks its authorization_mode to IAM_AUTH — that
--   module's Terraform provider can fully automate IAM role bindings,
--   Azure's cannot yet automate the equivalent Entra ID grant, so forcing
--   the more-automatable option as the default (not the only option) is
--   the honest tradeoff today. Revisit this once the azurerm provider
--   supports it end-to-end.
-+   MicrosoftEntraID is now the default per directed policy, even though
-+   the azurerm provider still cannot automate the actual data-plane
-+   grant (see hashicorp/terraform-provider-azurerm#30938). Every
-+   instance created with this default WILL BE UNREACHABLE until a
-+   principal is granted access out-of-band (Portal/CLI/ARM) — that
-+   manual step must happen as part of provisioning, not as an
-+   afterthought. See entra-id-auth-requires-manual-grant below, which
-+   will now fire on every apply that doesn't explicitly override this
-+   back to AccessKey.
+    null): AccessKey.
+      AccessKey: access-key (password) authentication is enabled.
+      MicrosoftEntraID: access-key authentication is disabled; clients
+        must authenticate via Microsoft Entra ID instead. This module's
+        azurerm provider version has no resource to grant specific
+        principals data-plane access — that authorization step happens
+        outside Terraform after this module creates the instance. Do not
+        set this to MicrosoftEntraID until that out-of-band grant is part
+        of your provisioning process, or no client will be able to
+        connect.
   EOT
   type        = string
   default     = null

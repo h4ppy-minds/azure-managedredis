@@ -6,8 +6,8 @@ Enterprise-based) instance — sizing, HA/clustering, persistence, auth mode,
 a private endpoint (always created), deletion protection, and optional DR
 with active-active geo-replication.
 
-Current module version: **0.2.0** — see [CHANGELOG.md](./CHANGELOG.md). This
-is a breaking release; read the CHANGELOG's `0.2.0` entry in full before
+Current module version: **5.0.0** — see [CHANGELOG.md](./CHANGELOG.md). This
+is a breaking release; read the CHANGELOG's `5.0.0` entry in full before
 upgrading.
 
 ## Naming convention: hyphens, not underscores
@@ -128,6 +128,24 @@ Implemented via an `azurerm_management_lock` (`CanNotDelete`) —
 `azurerm_managed_redis` has no native `deletion_protection_enabled`
 argument of its own. Also blocks any change that forces resource
 replacement (e.g. `node-type`) until temporarily disabled.
+
+## DR gets its own resource group — production recommendation
+
+```hcl
+resource-group-name    = "cfes-amr-eastus2-prod-rg"
+dr-resource-group-name = "cfes-amr-centralus-prod-rg"  # separate from primary
+```
+
+`dr-resource-group-name` defaults to `resource-group-name` (DR shares the
+primary's resource group) purely for backward compatibility. **Production
+deployments should set it explicitly to a separate, region-matching
+resource group.** A resource group is Azure's basic blast-radius and
+RBAC-scoping boundary — sharing one resource group across regions means
+an incident, bad policy, or accidental deletion scoped to that resource
+group doesn't respect the region boundary you're relying on for
+disaster recovery in the first place. This mirrors standard guidance from
+Microsoft's own Cloud Adoption Framework: one resource group per region
+for workloads with a documented DR/secondary-region posture.
 
 ## Structure
 

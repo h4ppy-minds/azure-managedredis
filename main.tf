@@ -17,7 +17,7 @@
 module "redis" {
   source = "./modules/terraform-azure-dpe-azure-managed-redis-cloud-3-0"
   #source  = "app.terraform.io/<YOUR_ORG>/managed-redis/azurerm" # replace <YOUR_ORG>; see REGISTRY_PUBLISHING.md
-  #version = "~> 0.2.0"
+  #version = "~> 5.0"
   for_each = local.redis
 
   # --- Identity ---
@@ -48,6 +48,7 @@ module "redis" {
   vnet-name                = each.value.vnet-name
   vnet-resource-group-name = each.value.vnet-resource-group-name
 
+  dr-resource-group-name      = try(each.value.dr-resource-group-name, null)
   dr-subnet-name              = try(each.value.dr-subnet-name, null)
   dr-vnet-name                = try(each.value.dr-vnet-name, null)
   dr-vnet-resource-group-name = try(each.value.dr-vnet-resource-group-name, null)

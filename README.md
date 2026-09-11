@@ -5,7 +5,7 @@ JSON file per instance, one PR per request, no shared file to
 merge-conflict over — same pattern as the Valkey onboarding root, adapted
 to Azure.
 
-Paired with redis module **v0.2.0** — see that module's CHANGELOG for the
+Paired with redis module **v5.0.0** — see that module's CHANGELOG for the
 breaking changes this template's `v2` was updated against.
 
 ## How it works
@@ -45,7 +45,7 @@ happens once, inside `locals.tf`, and nowhere else needs to know about it.
 
 ## Every instance gets a private endpoint — no toggle, no DNS zone
 
-The redis module (v0.2.0) always creates a private endpoint for every
+The redis module (v5.0.0) always creates a private endpoint for every
 instance — primary unconditionally, DR whenever the topology creates one.
 There's no `create_private_endpoint`-equivalent request field, and none is
 needed. **The module also no longer creates or links a private DNS
@@ -84,6 +84,34 @@ per `deployment_topology`:
 | `test-ha-cache.json` | `HA` |
 | `test-dr-active-passive-cache.json` | `DR-ActivePassive` |
 | `test-dr-active-active-cache.json` | `DR-ActiveActive` |
+
+## Regions are first-class — any configured region works as primary OR DR
+
+`default.json`'s `environments.<env>` has a `regions` map keyed by region
+name (`eastus2`, `centralus`, ...), each with its own
+`resource_group_name` and `networking` block. A request's `location` is
+looked up against this map for **both** primary and DR — there's no
+special-cased "primary uses one flat block, DR uses a different shaped
+block" asymmetry any more. This means a client can request `centralus` as
+their **primary** region (not just as a DR target) as long as
+`environments.<env>.regions.centralus` exists in `default.json`.
+
+**DR gets its own resource group**, matching the redis module's v5.2.0
+production recommendation (one resource group per region, per Azure's
+Cloud Adoption Framework guidance) — `dr-resource-group-name` is now
+resolved from the DR region's own `regions` entry, not the primary's
+resource group. This is a real change from earlier versions of this
+template, which silently put DR in the same resource group as primary.
+
+Two checks guard this:
+- `location-is-a-configured-region` — the requested primary `location`
+  must have a `regions` entry for this environment.
+- `dr-location-is-a-configured-region` — same, for the derived DR
+  location. This can fail even when `dr_region_pairs` (below) allows the
+  pairing globally, if this specific environment hasn't been given
+  `resource_group_name`/`networking` for that region yet — two separate
+  facts (can these regions pair at all vs. does this environment have
+  infra there) are checked separately, deliberately.
 
 ## DR region pairs
 
