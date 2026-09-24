@@ -70,6 +70,23 @@ output "persistence-mode" {
   value       = local.persistence-mode-effective
 }
 
+# --- Redis module outputs ---
+
+output "redis-modules" {
+  description = "Redis modules enabled on the primary (and DR, if any) default database — canonical names, sorted. Empty list when none were requested."
+  value       = local.redis-modules
+}
+
+output "clustering-policy" {
+  description = "The clustering policy actually applied. May differ from the clustering-policy input/topology default — forced to EnterpriseCluster when redis-modules includes RediSearch."
+  value       = local.clustering-policy
+}
+
+output "eviction-policy" {
+  description = "The eviction policy actually applied. May differ from the eviction-policy input — forced to NoEviction when redis-modules includes RediSearch."
+  value       = local.eviction-policy
+}
+
 # --- Networking outputs ---
 
 output "subnet-id" {

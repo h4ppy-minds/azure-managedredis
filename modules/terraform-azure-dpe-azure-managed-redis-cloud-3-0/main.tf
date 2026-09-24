@@ -32,6 +32,20 @@ resource "azurerm_managed_redis" "primary" {
     geo_replication_group_name                    = local.create-geo-replication ? var.geo-replication-group-name : null
     persistence_redis_database_backup_frequency   = local.persistence-mode-effective == "RDB" ? local.persistence-rdb-frequency : null
     persistence_append_only_file_backup_frequency = local.persistence-mode-effective == "AOF" ? local.persistence-aof-frequency : null
+
+    # Redis modules — create-time only (changing this list forces
+    # replacement). Iterator renamed to "m": inside a dynamic "module"
+    # block the default iterator name would be `module`, and
+    # `module.value` would be read as a reference to a Terraform module
+    # call, not this block's element.
+    dynamic "module" {
+      for_each = local.redis-modules
+      iterator = m
+      content {
+        name = m.value
+        args = lookup(local.redis-module-args, m.value, null)
+      }
+    }
   }
 
   timeouts {
@@ -44,6 +58,22 @@ resource "azurerm_managed_redis" "primary" {
     precondition {
       condition     = local.valid-subnet-for-private-endpoint
       error_message = "No subnet could be resolved for the (always-created) private endpoint. Set subnet-id, or all of subnet-name/vnet-name/vnet-resource-group-name."
+    }
+
+    # --- Redis modules: combinations Azure rejects at create time. ---
+    # Checked on the primary only — the DR instance always gets the exact
+    # same module list, so one failure point is enough.
+    precondition {
+      condition     = length(local.redis-modules-invalid-for-geo-replication) == 0
+      error_message = "deployment-topology = DR-ActiveActive (active geo-replication) supports only the RediSearch and RedisJSON modules. Remove: ${join(", ", local.redis-modules-invalid-for-geo-replication)} — or choose a different deployment-topology."
+    }
+    precondition {
+      condition     = length(local.redis-modules-invalid-for-sku) == 0
+      error_message = "node-type '${var.node-type}' does not support the module(s): ${join(", ", local.redis-modules-invalid-for-sku)}. Modules allowed on this SKU: ${join(", ", local.redis-modules-allowed-for-sku)}."
+    }
+    precondition {
+      condition     = length(local.redis-module-args-without-module) == 0
+      error_message = "redis-module-args sets args for module(s) not listed in redis-modules: ${join(", ", local.redis-module-args-without-module)}. Add them to redis-modules, or remove their args."
     }
   }
 }
@@ -68,6 +98,20 @@ resource "azurerm_managed_redis" "dr" {
     geo_replication_group_name                    = local.create-geo-replication ? var.geo-replication-group-name : null
     persistence_redis_database_backup_frequency   = local.persistence-mode-effective == "RDB" ? local.persistence-rdb-frequency : null
     persistence_append_only_file_backup_frequency = local.persistence-mode-effective == "AOF" ? local.persistence-aof-frequency : null
+
+    # Redis modules — create-time only (changing this list forces
+    # replacement). Iterator renamed to "m": inside a dynamic "module"
+    # block the default iterator name would be `module`, and
+    # `module.value` would be read as a reference to a Terraform module
+    # call, not this block's element.
+    dynamic "module" {
+      for_each = local.redis-modules
+      iterator = m
+      content {
+        name = m.value
+        args = lookup(local.redis-module-args, m.value, null)
+      }
+    }
   }
 
   timeouts {

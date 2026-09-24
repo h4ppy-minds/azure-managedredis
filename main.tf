@@ -67,6 +67,14 @@ module "redis" {
 
   eviction-policy = each.value.eviction-policy
 
+  # --- Redis modules — e.g. ["RediSearch", "RedisJSON", "Bloom",
+  # "TimeSeries"]. Validated and normalised by the module itself (names,
+  # duplicates, DR-ActiveActive and SKU compatibility); RediSearch also
+  # forces EnterpriseCluster + NoEviction there. Create-time only:
+  # changing either value on an existing instance forces replacement. ---
+  redis-modules     = each.value.redis-modules
+  redis-module-args = each.value.redis-module-args
+
   # --- Deletion protection ---
   deletion-protection-enabled = each.value.deletion-protection-enabled
 }

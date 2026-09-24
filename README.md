@@ -5,8 +5,9 @@ JSON file per instance, one PR per request, no shared file to
 merge-conflict over — same pattern as the Valkey onboarding root, adapted
 to Azure.
 
-Paired with redis module **v5.0.0** — see that module's CHANGELOG for the
-breaking changes this template's `v2` was updated against.
+Paired with redis module **v5.3.0** — see that module's CHANGELOG. (v5.0.0
+was the breaking release this template's `v2` was updated against; v5.3.0
+adds Redis modules support.)
 
 ## How it works
 
@@ -84,6 +85,54 @@ per `deployment_topology`:
 | `test-ha-cache.json` | `HA` |
 | `test-dr-active-passive-cache.json` | `DR-ActivePassive` |
 | `test-dr-active-active-cache.json` | `DR-ActiveActive` |
+| `test-ha-modules-cache.json` | `HA` + all four Redis modules (see below) |
+
+## Redis modules
+
+A request can enable Redis modules with an optional `redis_modules` array,
+plus optional per-module `redis_module_args`:
+
+```json
+"instance": {
+  "name": "orders-cache",
+  "deployment_topology": "HA",
+  "node_type": "Balanced_B10",
+  "redis_modules": ["RediSearch", "RedisJSON", "Bloom", "TimeSeries"],
+  "redis_module_args": { "Bloom": "ERROR_RATE 0.01 INITIAL_SIZE 400" }
+}
+```
+
+- **Names:** `RediSearch`/`Search`, `RedisJSON`/`JSON`,
+  `RedisBloom`/`Bloom` and `RedisTimeSeries`/`TimeSeries`. Terraform
+  accepts any letter case; the intake schema is case-sensitive. Omitting
+  the field, or sending `[]` or `null`, means no modules.
+- **No `default.json` default, by design.** Every other field falls back to
+  `default.json`; modules deliberately don't. Modules are create-time only,
+  so a platform-wide module default would destroy and recreate every
+  existing cache in the environment that doesn't list its own modules.
+- **Validation is enforced by the redis module** and fails the plan for:
+  unknown names, duplicates (an alias counts as the same module),
+  Bloom/TimeSeries with `DR-ActiveActive`, a module the `node_type` doesn't
+  support (Flash tiers), and args for a module that isn't enabled. A
+  malformed field (for example a string instead of an array) also fails
+  the plan; it is never silently ignored.
+- **Early warnings per request:** `locals.tf` adds `redis-modules-*` and
+  `redisearch-requires-noeviction` check blocks that name the offending
+  request file's instance, so a reviewer can see which request is wrong.
+- **RediSearch** requires `NoEviction` eviction and `EnterpriseCluster`
+  clustering. If a RediSearch request doesn't set `eviction_policy`, this
+  template defaults it to `NoEviction` instead of `default.json`'s value.
+  An explicit conflicting value is forced to `NoEviction` by the module,
+  with a warning, and rejected by the intake schema.
+
+> ⚠️ **Modules are create-time only.** Adding, removing or changing
+> `redis_modules` / `redis_module_args` on an **existing** request
+> destroys and recreates that cache, and all data is lost. With
+> `deletion_protection_enabled = true` the apply is blocked instead.
+> Review every PR that touches these fields for `must be replaced` in the
+> plan. The four original fixtures deliberately don't use modules, so
+> already-deployed test caches are never replaced by this release; module
+> coverage lives in the new `test-ha-modules-cache.json`.
 
 ## Regions are first-class — any configured region works as primary OR DR
 

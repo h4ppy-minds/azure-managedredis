@@ -70,6 +70,61 @@ locals {
     name => contains(["DR-ActivePassive", "DR-ActiveActive"], topology)
   }
 
+  # --- Redis modules (e.g. ["RediSearch", "RedisJSON", "Bloom",
+  # "TimeSeries"]) — resolved here as their own maps, not inside
+  # _redis_raw, because Layer 3c's eviction-policy default depends on
+  # "does this request enable RediSearch" (same sibling-reference reason
+  # as the maps above).
+  #
+  # Name/duplicate/topology/SKU validation is enforced HARD by the redis
+  # module (variable validation + lifecycle preconditions). This template
+  # only normalises the shape and adds early, per-request warnings (see
+  # the redis-modules-* checks below).
+  #
+  # A request whose redis_modules / redis_module_args is not the right
+  # JSON shape (e.g. a string instead of an array) is NOT silently
+  # dropped: it's replaced with a sentinel value the module's own
+  # validation is guaranteed to reject, so plan fails hard, and the
+  # redis-modules-valid-shape check names the offending request.
+  _redis_modules_invalid_shape_sentinel = ["INVALID-SHAPE: redis_modules must be a JSON array of module-name strings"]
+  _redis_module_args_invalid_shape_sentinel = {
+    "INVALID-SHAPE: redis_module_args must be a JSON object of module-name to string" = "x"
+  }
+
+  # Deliberately NO default.json fallback for modules (unlike every other
+  # field): modules are create-time only, so a platform-wide default would
+  # silently destroy and recreate EVERY existing cache in the environment
+  # that doesn't list its own modules. Omitted/null always means "none".
+  _instance_redis_modules = {
+    for name, payload in local._requested_instances :
+    name => (
+      try(payload.instance.redis_modules, null) == null
+      ? tolist([])
+      : try(tolist(payload.instance.redis_modules), local._redis_modules_invalid_shape_sentinel)
+    )
+  }
+
+  _instance_redis_module_args = {
+    for name, payload in local._requested_instances :
+    name => (
+      try(payload.instance.redis_module_args, null) == null
+      ? tomap({})
+      : try(tomap(payload.instance.redis_module_args), local._redis_module_args_invalid_shape_sentinel)
+    )
+  }
+
+  # lower-cased copies, only for the template's own checks and the
+  # RediSearch eviction default below.
+  _instance_redis_modules_lower = {
+    for name, mods in local._instance_redis_modules :
+    name => [for m in mods : try(lower(trimspace(m)), "")]
+  }
+
+  _instance_wants_redisearch = {
+    for name, mods in local._instance_redis_modules_lower :
+    name => contains(mods, "redisearch") || contains(mods, "search")
+  }
+
   # --- Cross-region DR pairing (global — which regions CAN pair at all) ---
   _dr_pair_list = try(local._defaults_raw.dr_region_pairs, [])
   _dr_region_pairs = merge([
@@ -177,7 +232,22 @@ locals {
       persistence-rdb-frequency = try(payload.instance.persistence.rdb_frequency, local._defaults_raw.persistence.rdb_frequency)
       persistence-aof-frequency = try(payload.instance.persistence.aof_frequency, local._defaults_raw.persistence.aof_frequency)
 
-      eviction-policy = try(payload.instance.eviction_policy, local._defaults_raw.eviction_policy)
+      # RediSearch requires NoEviction (Azure). When a request enables
+      # RediSearch and doesn't set eviction_policy itself, default to
+      # NoEviction instead of default.json's value, so a correct request
+      # never trips the module's "forced NoEviction" warning. An explicit
+      # conflicting eviction_policy is still passed through verbatim — the
+      # module forces NoEviction and the redisearch-requires-noeviction
+      # check below warns.
+      eviction-policy = try(
+        payload.instance.eviction_policy,
+        local._instance_wants_redisearch[name] ? "NoEviction" : local._defaults_raw.eviction_policy
+      )
+
+      # --- Redis modules (create-time only — changing either forces the
+      # instance to be replaced; see the module's README) ---
+      redis-modules     = local._instance_redis_modules[name]
+      redis-module-args = local._instance_redis_module_args[name]
 
       # --- Deletion protection ---
       deletion-protection-enabled = try(payload.instance.deletion_protection_enabled, local._defaults_raw.deletion_protection_enabled)
@@ -239,5 +309,111 @@ check "dr-requires-supported-region-pair" {
       !wants_dr || local._instance_dr_locations[name] != null
     ])
     error_message = "One or more DR requests picked a primary `location` with no supported DR secondary. Cross-region DR is currently only supported between the pairs listed in default.json's dr_region_pairs (today: ${join(", ", [for p in local._dr_pair_list : "${p[0]} <-> ${p[1]}"])}). Either change that instance's location to a supported primary, or ask the platform team to add a new pair to default.json.dr_region_pairs."
+  }
+}
+
+############################################
+# Redis modules — early, per-request warnings.
+#
+# These are ADVISORY (a check block can never block an apply). The hard
+# enforcement lives in the redis module itself: variable validation on
+# redis-modules / redis-module-args and lifecycle preconditions on
+# azurerm_managed_redis.primary. These checks exist so a reviewer sees
+# WHICH request file is wrong, by instance name, before reading the
+# module's error.
+############################################
+
+locals {
+  _redis_module_names_allowed = ["redisearch", "search", "redisjson", "json", "redisbloom", "bloom", "redistimeseries", "timeseries"]
+  _redis_module_canonical_lower = {
+    search = "redisearch", json = "redisjson", bloom = "redisbloom", timeseries = "redistimeseries"
+  }
+
+  _requests_with_invalid_redis_modules_shape = [
+    for name, payload in local._requested_instances : name
+    if(
+      (try(payload.instance.redis_modules, null) == null ? false : !can(tolist(payload.instance.redis_modules))) ||
+      (try(payload.instance.redis_module_args, null) == null ? false : !can(tomap(payload.instance.redis_module_args)))
+    )
+  ]
+
+  _requests_with_invalid_redis_module_names = [
+    for name, mods in local._instance_redis_modules_lower : name
+    if !alltrue([for m in mods : contains(local._redis_module_names_allowed, m)])
+  ]
+
+  _requests_with_duplicate_redis_modules = [
+    for name, mods in local._instance_redis_modules_lower : name
+    if length(mods) != length(distinct([for m in mods : lookup(local._redis_module_canonical_lower, m, m)]))
+  ]
+
+  # Active geo-replication supports only RediSearch + RedisJSON.
+  _requests_with_redis_modules_unsupported_by_active_active = [
+    for name, mods in local._instance_redis_modules_lower : name
+    if local._instance_topologies[name] == "DR-ActiveActive" && anytrue([
+      for m in mods : contains(["redisbloom", "bloom", "redistimeseries", "timeseries"], m)
+    ])
+  ]
+
+  # FlashOptimized_* supports only RedisJSON; EnterpriseFlash_* only
+  # RediSearch + RedisJSON.
+  _requests_with_redis_modules_unsupported_by_sku = [
+    for name, mods in local._instance_redis_modules_lower : name
+    if anytrue([
+      for m in mods : (
+        startswith(local._redis_raw[name].node-type, "FlashOptimized_") ? !contains(["redisjson", "json"], m) :
+        startswith(local._redis_raw[name].node-type, "EnterpriseFlash_") ? !contains(["redisearch", "search", "redisjson", "json"], m) :
+        false
+      )
+    ])
+  ]
+
+  # RediSearch + an explicitly requested eviction_policy other than
+  # NoEviction: the module forces NoEviction, this makes it visible.
+  _requests_with_redisearch_eviction_conflict = [
+    for name, payload in local._requested_instances : name
+    if local._instance_wants_redisearch[name] && coalesce(try(payload.instance.eviction_policy, null), "NoEviction") != "NoEviction"
+  ]
+}
+
+check "redis-modules-valid-shape" {
+  assert {
+    condition     = length(local._requests_with_invalid_redis_modules_shape) == 0
+    error_message = "Request(s) with a malformed redis_modules / redis_module_args: ${join(", ", local._requests_with_invalid_redis_modules_shape)}. redis_modules must be a JSON array of strings (e.g. [\"RediSearch\", \"RedisJSON\"]); redis_module_args must be a JSON object of module name to string. Plan will fail in the redis module for these requests."
+  }
+}
+
+check "redis-modules-valid-names" {
+  assert {
+    condition     = length(local._requests_with_invalid_redis_module_names) == 0
+    error_message = "Request(s) with an unknown module name in redis_modules: ${join(", ", local._requests_with_invalid_redis_module_names)}. Allowed (case-insensitive): RediSearch (or Search), RedisJSON (or JSON), RedisBloom (or Bloom), RedisTimeSeries (or TimeSeries). Plan will fail in the redis module for these requests."
+  }
+}
+
+check "redis-modules-no-duplicates" {
+  assert {
+    condition     = length(local._requests_with_duplicate_redis_modules) == 0
+    error_message = "Request(s) listing the same module twice in redis_modules (aliases count as the same module, e.g. \"Bloom\" and \"RedisBloom\"): ${join(", ", local._requests_with_duplicate_redis_modules)}. Plan will fail in the redis module for these requests."
+  }
+}
+
+check "redis-modules-active-active-compatible" {
+  assert {
+    condition     = length(local._requests_with_redis_modules_unsupported_by_active_active) == 0
+    error_message = "DR-ActiveActive request(s) with a module active geo-replication doesn't support: ${join(", ", local._requests_with_redis_modules_unsupported_by_active_active)}. Only RediSearch and RedisJSON can be used with DR-ActiveActive. Plan will fail in the redis module for these requests."
+  }
+}
+
+check "redis-modules-sku-compatible" {
+  assert {
+    condition     = length(local._requests_with_redis_modules_unsupported_by_sku) == 0
+    error_message = "Request(s) with a module their node_type doesn't support: ${join(", ", local._requests_with_redis_modules_unsupported_by_sku)}. FlashOptimized_* supports only RedisJSON; EnterpriseFlash_* supports only RediSearch and RedisJSON. Plan will fail in the redis module for these requests."
+  }
+}
+
+check "redisearch-requires-noeviction" {
+  assert {
+    condition     = length(local._requests_with_redisearch_eviction_conflict) == 0
+    error_message = "Request(s) enabling RediSearch with an explicit eviction_policy other than NoEviction: ${join(", ", local._requests_with_redisearch_eviction_conflict)}. Azure requires NoEviction (and EnterpriseCluster clustering) for RediSearch — the redis module forces both for this apply. Remove eviction_policy from the request, or set it to NoEviction."
   }
 }

@@ -6,9 +6,9 @@ Enterprise-based) instance — sizing, HA/clustering, persistence, auth mode,
 a private endpoint (always created), deletion protection, and optional DR
 with active-active geo-replication.
 
-Current module version: **5.0.0** — see [CHANGELOG.md](./CHANGELOG.md). This
-is a breaking release; read the CHANGELOG's `5.0.0` entry in full before
-upgrading.
+Current module version: **5.3.0** — see [CHANGELOG.md](./CHANGELOG.md).
+5.3.0 is additive (Redis modules support). If you're upgrading from 4.x,
+read the CHANGELOG's `5.0.0` entry in full first — that one is breaking.
 
 ## Naming convention: hyphens, not underscores
 
@@ -84,6 +84,9 @@ deployment-topology = "STANDALONE" | "HA" | "DR-ActivePassive" | "DR-ActiveActiv
 | `DR-ActivePassive` | on | `OSSCluster` | yes | no |
 | `DR-ActiveActive` | on | `OSSCluster` | yes | yes |
 
+Clustering is forced to `EnterpriseCluster` for every topology when
+`redis-modules` includes RediSearch — see "Redis modules" below.
+
 ### DR-ActiveActive vs. DR-ActivePassive
 
 - **`DR-ActiveActive`**: primary and DR are linked with
@@ -105,6 +108,130 @@ deployment-topology = "STANDALONE" | "HA" | "DR-ActivePassive" | "DR-ActiveActiv
 overridable choice. `MicrosoftEntraID` disables access-key auth but
 requires a **manual, out-of-band** Microsoft Entra ID data-plane grant —
 the azurerm provider cannot automate this yet.
+
+## Redis modules
+
+```hcl
+redis-modules     = ["RediSearch", "RedisJSON", "Bloom", "TimeSeries"]
+redis-module-args = { Bloom = "ERROR_RATE 0.01 INITIAL_SIZE 400" } # optional
+```
+
+Enables Redis modules on the default database of the primary **and** the DR
+instance (DR always gets the identical list, as geo-replication requires).
+Default: `[]`, no modules.
+
+**Names.** Canonical Azure names or short aliases, case-insensitive, with
+surrounding spaces ignored:
+
+| Canonical (sent to Azure) | Also accepted |
+|---|---|
+| `RediSearch` | `Search` |
+| `RedisJSON` | `JSON` |
+| `RedisBloom` | `Bloom` |
+| `RedisTimeSeries` | `TimeSeries` |
+
+Inputs are normalised to the canonical name and **sorted**, so the order a
+caller sends them in never causes a diff. Check the `redis-modules` output
+for what was actually applied.
+
+**Rules — plan fails when broken** (variable validation, then lifecycle
+preconditions on `azurerm_managed_redis.primary`):
+
+| Rule | Why |
+|---|---|
+| Every name must be one of the four modules above | Azure only offers these |
+| No duplicates, where an alias and its canonical name are the same module (`["Bloom", "RedisBloom"]` fails) | One module block per module |
+| `deployment-topology = DR-ActiveActive` allows only RediSearch and RedisJSON | Active geo-replication supports only these two |
+| `FlashOptimized_*` allows only RedisJSON; `EnterpriseFlash_*` only RediSearch and RedisJSON | Flash tiers don't host the other modules |
+| Every `redis-module-args` key must be a valid module name that is also in `redis-modules`; values must be non-empty | Args for a module that isn't enabled can't be applied |
+
+**Forced values.** RediSearch requires `EnterpriseCluster` clustering and
+`NoEviction`. When `redis-modules` includes RediSearch, `clustering-policy`
+and `eviction-policy` are forced to those values whatever was passed. The
+`redisearch-forces-cluster-and-eviction-policy` check warns when that
+overrides an explicit input. The `clustering-policy` and `eviction-policy`
+outputs show what was applied.
+
+**Module args.** `FT.CONFIG` and other runtime config commands are not
+supported on Azure Managed Redis. `redis-module-args` at create time is the
+only way to configure a module. Keys use the same names or aliases as
+`redis-modules`.
+
+### Compatibility and outcomes
+
+Every topology supports modules. Only DR-ActiveActive limits which ones.
+
+**Topology × modules**
+
+| Topology | RediSearch | RedisJSON | RedisBloom | RedisTimeSeries | DR cache gets the same modules? |
+|---|---|---|---|---|---|
+| STANDALONE | ✅ | ✅ | ✅ | ✅ | No DR cache |
+| HA | ✅ | ✅ | ✅ | ✅ | No DR cache |
+| DR-ActivePassive | ✅ | ✅ | ✅ | ✅ | Yes, automatically |
+| DR-ActiveActive | ✅ | ✅ | ❌ plan fails | ❌ plan fails | Yes, automatically |
+
+**SKU × modules**
+
+| node-type family | Modules allowed |
+|---|---|
+| Balanced, MemoryOptimized, ComputeOptimized, Enterprise_E* | All four |
+| FlashOptimized_* | RedisJSON only |
+| EnterpriseFlash_* | RediSearch and RedisJSON |
+
+DR-ActiveActive also needs a geo-replication-capable SKU (`Balanced_B10`
+or above, or a supported Memory, Compute or Flash SKU); see the
+`geo-replication-requires-supported-sku` check.
+
+**Clustering and eviction applied**
+
+| Modules requested | clustering-policy applied | eviction-policy applied |
+|---|---|---|
+| None | Topology default: STANDALONE → `NoCluster`; HA and both DR → `OSSCluster` | Input, or `AllKeysLRU` |
+| Includes RediSearch | **Forced `EnterpriseCluster`** (all topologies) | **Forced `NoEviction`**; an explicit conflicting input is overridden with a warning |
+| JSON / Bloom / TimeSeries only | Topology default, unchanged | Any allowed value, default `AllKeysLRU` |
+
+Allowed eviction values: `AllKeysLRU`, `AllKeysLFU`, `AllKeysRandom`,
+`VolatileLRU`, `VolatileLFU`, `VolatileRandom`, `VolatileTTL`, `NoEviction`.
+
+**Examples**
+
+| Topology | redis-modules | Result |
+|---|---|---|
+| STANDALONE | `[]` | NoCluster, AllKeysLRU |
+| STANDALONE | `["RediSearch", "RedisJSON"]` | EnterpriseCluster, NoEviction |
+| STANDALONE | `["JSON", "Bloom"]` | NoCluster, input eviction or AllKeysLRU |
+| HA | all four | EnterpriseCluster, NoEviction |
+| HA | `["TimeSeries"]` | OSSCluster, input eviction or AllKeysLRU |
+| DR-ActivePassive | all four | EnterpriseCluster, NoEviction, on primary and DR |
+| DR-ActivePassive | `["Bloom"]` | OSSCluster, input eviction, on primary and DR |
+| DR-ActiveActive | `["RediSearch", "RedisJSON"]` | EnterpriseCluster, NoEviction, persistence forced off, on both caches |
+| DR-ActiveActive | `["JSON"]` | OSSCluster, input eviction, persistence forced off |
+| DR-ActiveActive | anything with Bloom or TimeSeries | ❌ plan fails |
+
+**Tuning without recreating.** Module args are create-time defaults only;
+changing `redis-module-args` later recreates the instance. Instead, tune per
+object from the application at runtime:
+
+| Module | Runtime tuning |
+|---|---|
+| RedisBloom | `BF.RESERVE key <error_rate> <capacity>` per filter (or `CF.RESERVE`) |
+| RediSearch | Per-index options in `FT.CREATE` |
+| RedisTimeSeries | `TS.CREATE` per series; `TS.ALTER` to change later |
+| RedisJSON | Nothing to tune |
+
+For example, `ERROR_RATE 0.01 INITIAL_SIZE 400` for RedisBloom only sets
+the false-positive rate and starting capacity of filters auto-created by
+the first `BF.ADD`. Filters created with `BF.RESERVE` ignore it. RedisBloom's
+built-in defaults are `ERROR_RATE 0.01 INITIAL_SIZE 100`, so leave
+`redis-module-args` empty unless a team has a specific reason.
+
+> ⚠️ **Create-time only.** Azure cannot load, unload or reconfigure a module
+> on a running instance. Adding, removing or changing a module, its args,
+> or the clustering policy (which RediSearch changes) on an existing
+> instance **destroys and recreates it, and all data is lost**. Treat it as
+> a migration. `deletion-protection-enabled = true` blocks the replacement
+> until it's temporarily disabled. Always read the plan for
+> `must be replaced` before applying.
 
 ## Persistence
 
@@ -179,6 +306,9 @@ module "redis" {
   dr-location          = "centralus"
   node-type            = "Balanced_B10"
 
+  # Only RediSearch + RedisJSON are allowed with DR-ActiveActive
+  redis-modules = ["RediSearch", "RedisJSON"]
+
   subnet-id    = "/subscriptions/.../subnets/cfes-amr-eastus2-prod-snet"
   dr-subnet-id = "/subscriptions/.../subnets/cfes-amr-centralus-prod-snet"
 
@@ -207,6 +337,10 @@ module "redis" {
 - No customer-managed key (CMK) encryption support yet.
 - `node-type` changes force replacement of the instance (Azure API
   behavior).
+- `redis-modules` / `redis-module-args` changes force replacement of the
+  instance (Azure API behavior — modules are create-time only).
+- Module versions are managed by Azure; they can't be pinned or upgraded
+  from this module.
 
 ## Roadmap
 

@@ -11,6 +11,45 @@ All notable changes to this module are documented here. Format follows
 - Customer-managed key (CMK) encryption support
 - Automate the Entra ID data-plane grant once azurerm supports it
 
+## [5.3.0] - 2026-09-24
+
+### Added
+- **Redis modules support: `redis-modules` (list) and `redis-module-args`
+  (map) variables.** e.g. `redis-modules = ["RediSearch", "RedisJSON",
+  "Bloom", "TimeSeries"]`. Applied to the primary and, whenever the
+  topology has one, the DR instance, which always gets the identical list.
+  Both default to empty, so the change is additive and existing callers
+  see no diff.
+  - Canonical names or aliases are accepted, case-insensitive: `Search`,
+    `JSON`, `Bloom`, `TimeSeries`. They are normalised to the canonical
+    Azure name and sorted, so reordering a caller's list never produces a
+    diff.
+  - Validation (hard fail): unknown names, duplicates (an alias counts as
+    the same module), null entries, unknown or duplicate args keys, and
+    empty args values.
+  - Preconditions on `azurerm_managed_redis.primary` (hard fail):
+    DR-ActiveActive allows only RediSearch and RedisJSON;
+    `FlashOptimized_*` allows only RedisJSON; `EnterpriseFlash_*` allows
+    only RediSearch and RedisJSON; args may only be given for an enabled
+    module.
+  - RediSearch forces `clustering-policy = EnterpriseCluster` and
+    `eviction-policy = NoEviction` (Azure requirement), with a new
+    advisory check `redisearch-forces-cluster-and-eviction-policy`.
+- Outputs `redis-modules`, `clustering-policy` and `eviction-policy`,
+  showing the effective values after any forcing.
+- `tests/redis-modules.tftest.hcl`: a plan-only `terraform test` suite
+  (13 runs; Terraform >= 1.7 for `mock_provider`).
+
+### Changed
+- `clustering-policy` now also accepts `EnterpriseCluster`.
+- `eviction-policy` now validates against the provider's allowed values.
+  Previously any string was accepted and failed later, at the Azure API.
+
+### Notes
+- Modules are create-time only. Changing `redis-modules` or
+  `redis-module-args` on an existing instance forces replacement, with
+  data loss, and is blocked by `deletion-protection-enabled = true`.
+
 ## [5.2.0] - 2026-08-25
 
 ### Added

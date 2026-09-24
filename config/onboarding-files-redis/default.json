@@ -10,9 +10,14 @@
     "rdb_frequency": "12h",
     "aof_frequency": "1s"
   },
+  "redis_modules": [],
+  "redis_module_args": {},
   "deletion_protection_enabled": true,
   "dr_region_pairs": [
-    ["eastus2", "centralus"]
+    [
+      "eastus2",
+      "centralus"
+    ]
   ],
   "environments": {
     "dev": {

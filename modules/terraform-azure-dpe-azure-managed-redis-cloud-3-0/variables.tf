@@ -255,23 +255,136 @@ variable "high-availability-enabled" {
 
 # --- OPTIONAL ---
 variable "clustering-policy" {
-  description = "Optional override for default_database clustering_policy. Default (when left null): the deployment-topology-driven value in local.defaults.topology-profile — NoCluster for STANDALONE, OSSCluster for HA/DR-ActivePassive/DR-ActiveActive."
+  description = "Optional override for default_database clustering_policy. Default (when left null): the deployment-topology-driven value in local.defaults.topology-profile — NoCluster for STANDALONE, OSSCluster for HA/DR-ActivePassive/DR-ActiveActive. Forced to EnterpriseCluster whenever redis-modules includes RediSearch (Azure requirement), regardless of this value — see the redisearch-forces-cluster-and-eviction-policy check."
   type        = string
   default     = null
   nullable    = true
 
   validation {
-    condition     = var.clustering-policy == null ? true : contains(["NoCluster", "OSSCluster"], var.clustering-policy)
-    error_message = "clustering-policy must be 'NoCluster' or 'OSSCluster'."
+    condition     = var.clustering-policy == null ? true : contains(["NoCluster", "OSSCluster", "EnterpriseCluster"], var.clustering-policy)
+    error_message = "clustering-policy must be 'NoCluster', 'OSSCluster' or 'EnterpriseCluster'."
   }
 }
 
 # --- OPTIONAL ---
 variable "eviction-policy" {
-  description = "Eviction policy applied identically to the primary and DR default databases. Default (see all-locals.tf): AllKeysLRU."
+  description = "Eviction policy applied identically to the primary and DR default databases. Default (see all-locals.tf): AllKeysLRU. Forced to NoEviction whenever redis-modules includes RediSearch (Azure requirement), regardless of this value — see the redisearch-forces-cluster-and-eviction-policy check."
   type        = string
   default     = null
   nullable    = true
+
+  validation {
+    condition = var.eviction-policy == null ? true : contains(
+      ["AllKeysLFU", "AllKeysLRU", "AllKeysRandom", "VolatileLRU", "VolatileLFU", "VolatileTTL", "VolatileRandom", "NoEviction"],
+      var.eviction-policy
+    )
+    error_message = "eviction-policy must be one of: AllKeysLFU, AllKeysLRU, AllKeysRandom, VolatileLRU, VolatileLFU, VolatileTTL, VolatileRandom, NoEviction."
+  }
+}
+
+############################################
+# Redis modules
+#
+# Modules can ONLY be chosen when an instance is created — Azure has no way
+# to load or remove a module on a running instance. Changing redis-modules
+# (or redis-module-args) on an existing instance therefore forces the
+# instance to be REPLACED (data loss), and deletion-protection-enabled =
+# true will block that replacement until it is temporarily disabled.
+############################################
+
+# --- OPTIONAL ---
+variable "redis-modules" {
+  description = <<-EOT
+    Redis modules to enable on the primary (and DR, if any) default
+    database. Default (see all-locals.tf): [] — no modules.
+    Accepts the canonical Azure names or short aliases, case-insensitive:
+      RediSearch      | Search
+      RedisJSON       | JSON
+      RedisBloom      | Bloom
+      RedisTimeSeries | TimeSeries
+    e.g. ["RediSearch", "RedisJSON", "Bloom", "TimeSeries"].
+    Names are normalised to the canonical form and sorted, so the order
+    the caller sends them in never causes a diff.
+    Rules enforced (plan fails otherwise):
+      - every name must be one of the above; no duplicates (an alias and
+        its canonical name count as the same module);
+      - DR-ActiveActive (active geo-replication) allows only RediSearch
+        and RedisJSON;
+      - FlashOptimized_* SKUs allow only RedisJSON; EnterpriseFlash_*
+        SKUs allow only RediSearch and RedisJSON.
+    RediSearch also forces clustering-policy = EnterpriseCluster and
+    eviction-policy = NoEviction (Azure requirement).
+    Changing this on an existing instance forces REPLACEMENT.
+  EOT
+  type        = list(string)
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.redis-modules == null ? true : alltrue([
+      for m in var.redis-modules : contains(
+        ["redisearch", "search", "redisjson", "json", "redisbloom", "bloom", "redistimeseries", "timeseries"],
+        try(lower(trimspace(m)), "")
+      )
+    ])
+    error_message = "redis-modules contains an invalid module name: ${var.redis-modules == null ? "" : join(", ", [for m in var.redis-modules : m == null ? "<null>" : "'${m}'" if !contains(["redisearch", "search", "redisjson", "json", "redisbloom", "bloom", "redistimeseries", "timeseries"], try(lower(trimspace(m)), ""))])}. Allowed (case-insensitive): RediSearch (or Search), RedisJSON (or JSON), RedisBloom (or Bloom), RedisTimeSeries (or TimeSeries)."
+  }
+
+  validation {
+    condition = var.redis-modules == null ? true : length(var.redis-modules) == length(distinct([
+      for m in var.redis-modules : lookup(
+        { search = "redisearch", json = "redisjson", bloom = "redisbloom", timeseries = "redistimeseries" },
+        try(lower(trimspace(m)), ""),
+        try(lower(trimspace(m)), "")
+      )
+    ]))
+    error_message = "redis-modules contains the same module more than once. Aliases count as the same module — e.g. \"Bloom\" and \"RedisBloom\", or \"RediSearch\" and \"redisearch\"."
+  }
+}
+
+# --- OPTIONAL ---
+variable "redis-module-args" {
+  description = <<-EOT
+    Optional per-module configuration arguments, keyed by module name
+    (canonical name or alias, case-insensitive — same names as
+    redis-modules). Default (see all-locals.tf): {} — no args.
+    e.g. { RedisBloom = "ERROR_RATE 0.01 INITIAL_SIZE 400" }.
+    FT.CONFIG / module config commands are not supported on Azure Managed
+    Redis — args set here at creation are the only way to configure a
+    module. Every key must also be listed in redis-modules. Changing
+    this on an existing instance forces REPLACEMENT.
+  EOT
+  type        = map(string)
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.redis-module-args == null ? true : alltrue([
+      for k in keys(var.redis-module-args) : contains(
+        ["redisearch", "search", "redisjson", "json", "redisbloom", "bloom", "redistimeseries", "timeseries"],
+        lower(trimspace(k))
+      )
+    ])
+    error_message = "redis-module-args has an invalid key: ${var.redis-module-args == null ? "" : join(", ", [for k in keys(var.redis-module-args) : "'${k}'" if !contains(["redisearch", "search", "redisjson", "json", "redisbloom", "bloom", "redistimeseries", "timeseries"], lower(trimspace(k)))])}. Keys must be module names: RediSearch (or Search), RedisJSON (or JSON), RedisBloom (or Bloom), RedisTimeSeries (or TimeSeries)."
+  }
+
+  validation {
+    condition = var.redis-module-args == null ? true : length(keys(var.redis-module-args)) == length(distinct([
+      for k in keys(var.redis-module-args) : lookup(
+        { search = "redisearch", json = "redisjson", bloom = "redisbloom", timeseries = "redistimeseries" },
+        lower(trimspace(k)),
+        lower(trimspace(k))
+      )
+    ]))
+    error_message = "redis-module-args has the same module under two keys (aliases count as the same module, e.g. \"Bloom\" and \"RedisBloom\")."
+  }
+
+  validation {
+    condition = var.redis-module-args == null ? true : alltrue([
+      for v in values(var.redis-module-args) : v != null ? trimspace(v) != "" : false
+    ])
+    error_message = "redis-module-args values must be non-empty strings (omit the key entirely instead of passing an empty value)."
+  }
 }
 
 ############################################
@@ -461,5 +574,20 @@ check "entra-id-auth-requires-manual-grant" {
   assert {
     condition     = local.authorization-mode != "MicrosoftEntraID"
     error_message = "authorization-mode = MicrosoftEntraID disables access-key authentication, but this module's azurerm provider version has no resource to grant Entra ID principals data-plane access — that grant must be done out-of-band. This check is advisory only and does not block the apply."
+  }
+}
+
+# Advisory, same pattern as persistence-disabled-for-active-active: the
+# values ARE forced in all-locals.tf; this only tells the caller that an
+# explicit value they passed was overridden. The hard rules for modules
+# (names, duplicates, geo-replication, SKU, args keys) are enforced by
+# variable validation above and lifecycle preconditions in main.tf.
+check "redisearch-forces-cluster-and-eviction-policy" {
+  assert {
+    condition = !(local.redisearch-enabled && (
+      (var.clustering-policy != null && var.clustering-policy != "EnterpriseCluster") ||
+      (var.eviction-policy != null && var.eviction-policy != "NoEviction")
+    ))
+    error_message = "redis-modules includes RediSearch, which Azure only supports with clustering-policy = EnterpriseCluster and eviction-policy = NoEviction. The requested clustering-policy = '${coalesce(var.clustering-policy, "(default)")}' / eviction-policy = '${coalesce(var.eviction-policy, "(default)")}' have been forced to EnterpriseCluster / NoEviction for this apply."
   }
 }
