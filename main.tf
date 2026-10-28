@@ -21,16 +21,19 @@ module "redis" {
   for_each = local.redis
 
   # --- Identity ---
-  name                = each.value.name
-  location            = each.value.location
-  resource-group-name = each.value.resource-group-name
-  environment         = each.value.environment
-  tags                = each.value.tags
+  # The module has no notion of environment (v6.0.0): this template owns
+  # environments and passes the FULL base name, environment included. The
+  # module only adds fixed affixes (-dr, pe-, psc-, lock-), so Azure names
+  # are identical to what module 5.x built from name + environment.
+  name                 = "${each.value.name}-${each.value.environment}"
+  location             = each.value.location
+  resource-group-name  = each.value.resource-group-name
+  tags                 = each.value.tags
 
   # --- Topology ---
-  deployment-topology        = each.value.deployment-topology
-  dr-location                = try(each.value.dr-location, null)
-  geo-replication-group-name = each.value.geo-replication-group-name
+  deployment-topology         = each.value.deployment-topology
+  dr-location                 = try(each.value.dr-location, null)
+  geo-replication-group-name  = each.value.geo-replication-group-name
 
   # --- Sizing — always explicit; the module has no default of its own
   # any more (v5.0.0), so local.redis always resolves a real value
@@ -48,10 +51,10 @@ module "redis" {
   vnet-name                = each.value.vnet-name
   vnet-resource-group-name = each.value.vnet-resource-group-name
 
-  dr-resource-group-name      = try(each.value.dr-resource-group-name, null)
-  dr-subnet-name              = try(each.value.dr-subnet-name, null)
-  dr-vnet-name                = try(each.value.dr-vnet-name, null)
-  dr-vnet-resource-group-name = try(each.value.dr-vnet-resource-group-name, null)
+  dr-resource-group-name       = try(each.value.dr-resource-group-name, null)
+  dr-subnet-name               = try(each.value.dr-subnet-name, null)
+  dr-vnet-name                 = try(each.value.dr-vnet-name, null)
+  dr-vnet-resource-group-name  = try(each.value.dr-vnet-resource-group-name, null)
 
   # --- Auth / TLS ---
   # client-protocol / public-network-access are intentionally NOT passed

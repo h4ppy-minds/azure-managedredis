@@ -11,6 +11,38 @@ All notable changes to this module are documented here. Format follows
 - Customer-managed key (CMK) encryption support
 - Automate the Entra ID data-plane grant once azurerm supports it
 
+## [6.0.0] - 2026-10-28
+
+### Changed — BREAKING (module inputs only; Azure resources are unchanged)
+- **`environment` variable removed.** The module no longer knows about
+  environments; the onboarding template owns them. Callers pass the full
+  base name, environment included (`name = "orders-cache-dev"`), and the
+  module adds only fixed affixes: `-dr`, `pe-`, `psc-`, `lock-`. The
+  resulting Azure names are identical to 5.x (`<name>-<env>`,
+  `<name>-<env>-dr`, `pe-<name>-<env>`, ...), so existing instances plan
+  with **no changes**. Verified by applying 5.3.0 and planning 6.0.0
+  against the same state.
+- **`name` is now validated:** lowercase letters, numbers and hyphens,
+  starting with a letter, ending with a letter or number, at most 57
+  characters (Azure's 60 minus `-dr`).
+
+### Removed
+- `resolved-environment` output.
+- `local.environment`, `local.is-dev`, `local.is-prod`.
+- `prod-should-not-be-standalone` check: moved to the onboarding template,
+  which knows which environments are production.
+
+### Fixed (docs)
+- README no longer claims `deletion-protection-enabled = true` blocks a
+  forced replacement or a Terraform destroy. Terraform removes the lock
+  first; the lock only blocks deletes made outside Terraform.
+
+### Migration
+- Replace `name = "x"` + `environment = "dev"` with `name = "x-dev"` and
+  remove `environment`. The onboarding template does this from 3.2.0.
+- Run `terraform plan` on every workspace before applying. It must show no
+  resource changes; any `must be replaced` means a name differs, so stop.
+
 ## [5.3.0] - 2026-09-24
 
 ### Added
@@ -38,7 +70,7 @@ All notable changes to this module are documented here. Format follows
 - Outputs `redis-modules`, `clustering-policy` and `eviction-policy`,
   showing the effective values after any forcing.
 - `tests/redis-modules.tftest.hcl`: a plan-only `terraform test` suite
-  (13 runs; Terraform >= 1.7 for `mock_provider`).
+  (Terraform >= 1.7 for `mock_provider`).
 
 ### Changed
 - `clustering-policy` now also accepts `EnterpriseCluster`.
@@ -48,7 +80,7 @@ All notable changes to this module are documented here. Format follows
 ### Notes
 - Modules are create-time only. Changing `redis-modules` or
   `redis-module-args` on an existing instance forces replacement, with
-  data loss, and is blocked by `deletion-protection-enabled = true`.
+  data loss.
 
 ## [5.2.0] - 2026-08-25
 

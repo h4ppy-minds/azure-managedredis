@@ -84,7 +84,6 @@ locals {
   # 2. EFFECTIVE VALUES — var override wins, else local.defaults.*.
   ##########################################################################
 
-  environment         = var.environment
   deployment-topology = coalesce(var.deployment-topology, local.defaults.deployment-topology)
 
   # node-type has no default/coalesce — it's a required variable now, so
@@ -149,7 +148,7 @@ locals {
   client-protocol       = "Encrypted"
   public-network-access = "Disabled"
 
-  authorization-mode                 = coalesce(var.authorization-mode, local.defaults.authorization-mode)
+  authorization-mode = coalesce(var.authorization-mode, local.defaults.authorization-mode)
   access-keys-authentication-enabled = local.authorization-mode == "AccessKey"
 
   persistence-mode          = coalesce(var.persistence-mode, local.defaults.persistence-mode)
@@ -166,9 +165,6 @@ locals {
   ##########################################################################
   # 3. DERIVED LOCALS
   ##########################################################################
-
-  is-dev  = local.environment == "dev"
-  is-prod = local.environment == "prod"
 
   create-dr              = local.defaults.topology-profile[local.deployment-topology].create-dr
   create-geo-replication = local.defaults.topology-profile[local.deployment-topology].create-geo-replication

@@ -23,11 +23,6 @@ output "redis-primary-access-key" {
   sensitive   = true
 }
 
-output "resolved-environment" {
-  description = "The effective environment string used for naming."
-  value       = local.environment
-}
-
 output "resolved-deployment-topology" {
   description = "The effective deployment topology used to derive HA/clustering/DR/geo-replication."
   value       = local.deployment-topology

@@ -19,14 +19,14 @@
 ############################################
 
 resource "azurerm_private_endpoint" "primary" {
-  name                = "pe-${var.name}-${local.environment}"
+  name                = "pe-${var.name}"
   location            = var.location
   resource_group_name = var.resource-group-name
   subnet_id           = local.subnet-id
   tags                = local.tags
 
   private_service_connection {
-    name                           = "psc-${var.name}-${local.environment}"
+    name                           = "psc-${var.name}"
     private_connection_resource_id = azurerm_managed_redis.primary.id
     subresource_names              = ["redisenterprise"]
     is_manual_connection           = false
@@ -49,14 +49,14 @@ resource "azurerm_private_endpoint" "primary" {
 resource "azurerm_private_endpoint" "dr" {
   count = local.create-dr ? 1 : 0
 
-  name                = "pe-${var.name}-${local.environment}-dr"
+  name                = "pe-${var.name}-dr"
   location            = coalesce(var.dr-location, var.location)
   resource_group_name = local.dr-resource-group-name
   subnet_id           = local.dr-subnet-id
   tags                = local.tags
 
   private_service_connection {
-    name                           = "psc-${var.name}-${local.environment}-dr"
+    name                           = "psc-${var.name}-dr"
     private_connection_resource_id = azurerm_managed_redis.dr[0].id
     subresource_names              = ["redisenterprise"]
     is_manual_connection           = false

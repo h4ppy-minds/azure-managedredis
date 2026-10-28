@@ -8,6 +8,76 @@ which module version it's paired with.
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-28 (paired with redis module v6.0.0)
+
+### Changed
+- **This template now owns environments.** Module 6.0.0 removed its
+  `environment` input, so `main.tf` passes the full name
+  `"<instance.name>-<env>"` as `name` and no longer passes `environment`.
+  Azure resource names are unchanged, so existing caches plan with **no
+  changes** (verified by applying template 3.1.0 + module 5.3.0, then
+  planning 3.2.0 + 6.0.0 against the same state).
+- The `redis-instances` output keeps its `resolved-environment` key; its
+  value now comes from `var.env` (the module no longer outputs it).
+- Intake schema: `instance.name` is now capped at 49 characters (was 57),
+  so `<name>-preprod-dr` stays within Azure's 60-character limit.
+
+### Added
+- **`preprod` environment:** `env` validation in `variables.tf`, the intake
+  schema's `environment` enum, and an `environments.preprod` block in
+  `default.json`. The block ships with a placeholder subscription ID and
+  `REPLACE-ME` networking values: fill in the real subscription, resource
+  groups, VNets and subnets for both regions before the first preprod run.
+- `prod-should-not-be-standalone` check (moved here from the module): warns
+  when a production-like environment (`preprod`, `prod`, listed in
+  `_production_like_envs`) has STANDALONE requests. Advisory only.
+- `instance-name-fits-with-environment` check: names any request whose
+  `<name>-<env>` exceeds 57 characters (the module then fails the plan).
+
+### Migration
+- Upgrade the module to 6.0.0 at the same time; template 3.2.0 does not
+  work with module 5.x (it no longer passes `environment`).
+- Run `terraform plan` on every workspace before applying: expect no
+  resource changes, only output changes if any.
+
+## [3.1.0] - 2026-09-24 (paired with redis module v5.3.0)
+
+### Added
+- **`redis_modules` / `redis_module_args` request fields**, for example
+  `"redis_modules": ["RediSearch", "RedisJSON", "Bloom", "TimeSeries"]`.
+  They are passed to the module's `redis-modules` / `redis-module-args`
+  inputs; the module does the hard validation. Unlike other fields, there
+  is deliberately **no `default.json` fallback**: a platform-wide module
+  default would force-replace every existing cache that doesn't list its
+  own modules. Omitted or null means none.
+- Per-request advisory checks in `locals.tf`: `redis-modules-valid-shape`,
+  `redis-modules-valid-names`, `redis-modules-no-duplicates`,
+  `redis-modules-active-active-compatible`,
+  `redis-modules-sku-compatible` and `redisearch-requires-noeviction`.
+  Each names the offending request.
+- A request whose `redis_modules` / `redis_module_args` has the wrong JSON
+  shape now fails the plan. It is replaced with a sentinel value that the
+  module rejects, rather than being silently ignored.
+- `eviction_policy` now defaults to `NoEviction`, not `default.json`'s
+  value, when a request enables RediSearch and doesn't set it.
+- The `redis-instances` output now includes `redis-modules`,
+  `clustering-policy` and `eviction-policy`. The
+  `derived-config-by-instance` output now includes `redis-modules` and
+  `eviction-policy`.
+- `redis-intake-schema.json`: `redis_modules` / `redis_module_args`
+  properties, plus `allOf` if/then rules rejecting Bloom/TimeSeries with
+  DR-ActiveActive, unsupported modules on Flash node types, and RediSearch
+  with any eviction_policy other than NoEviction.
+- New fixture `test-ha-modules-cache.json` with all four modules. The
+  existing four fixtures are unchanged, so already-deployed test caches
+  are not replaced.
+
+### Fixed
+- The `dr-location-is-a-configured-region` check errored ("argument must not
+  be null") for every non-DR request, because `dr_loc == null || contains(...)`
+  does not short-circuit on all Terraform/OpenTofu versions. It now uses a
+  conditional.
+
 ## [3.0.0] - 2026-08-25 (paired with redis module v5.2.0)
 
 ### Changed — BREAKING (default.json schema)

@@ -157,7 +157,10 @@ check "dr-location-is-a-configured-region" {
   assert {
     condition = alltrue([
       for name, dr_loc in local._instance_dr_locations :
-      dr_loc == null || contains(keys(try(local._env_infra.regions, {})), dr_loc)
+      # Conditional, not `dr_loc == null || contains(...)`: `||` does not
+      # short-circuit on every Terraform/OpenTofu version, and contains()
+      # errors on a null value — which every non-DR request has.
+      dr_loc == null ? true : contains(keys(try(local._env_infra.regions, {})), dr_loc)
     ])
     error_message = "One or more DR requests resolved a dr_location that environment '${var.env}' has no regions entry for in default.json — the region pair exists globally (dr_region_pairs), but this environment hasn't been given resource_group_name/networking for it yet. Configured regions for this environment: ${join(", ", keys(try(local._env_infra.regions, {})))}."
   }
@@ -187,9 +190,9 @@ locals {
       # (or any other configured region) work as a PRIMARY location, not
       # just as a DR target.
       resource-group-name      = local._env_infra.regions[local._instance_locations[name]].resource_group_name
-      subnet-name              = local._env_infra.regions[local._instance_locations[name]].networking.subnet_name
-      vnet-name                = local._env_infra.regions[local._instance_locations[name]].networking.vnet_name
-      vnet-resource-group-name = local._env_infra.regions[local._instance_locations[name]].networking.vnet_resource_group_name
+      subnet-name               = local._env_infra.regions[local._instance_locations[name]].networking.subnet_name
+      vnet-name                 = local._env_infra.regions[local._instance_locations[name]].networking.vnet_name
+      vnet-resource-group-name  = local._env_infra.regions[local._instance_locations[name]].networking.vnet_resource_group_name
 
       # --- Deployment topology (single settable knob) ---
       deployment-topology = local._instance_topologies[name]
@@ -415,5 +418,42 @@ check "redisearch-requires-noeviction" {
   assert {
     condition     = length(local._requests_with_redisearch_eviction_conflict) == 0
     error_message = "Request(s) enabling RediSearch with an explicit eviction_policy other than NoEviction: ${join(", ", local._requests_with_redisearch_eviction_conflict)}. Azure requires NoEviction (and EnterpriseCluster clustering) for RediSearch — the redis module forces both for this apply. Remove eviction_policy from the request, or set it to NoEviction."
+  }
+}
+
+############################################
+# Environment rules — owned by this template, not the redis module.
+############################################
+
+locals {
+  # Environments treated as production: STANDALONE (no HA, no DR) is
+  # flagged for these.
+  _production_like_envs = ["preprod", "prod"]
+
+  _standalone_requests = [
+    for name, topology in local._instance_topologies : name if topology == "STANDALONE"
+  ]
+
+  # The module caps its full name at 57 characters (Azure's 60 minus
+  # "-dr"); this template adds "-<env>", so the request's own name must
+  # leave room for it. Hard-enforced by the module's name validation —
+  # this check only names the offending request.
+  _requests_with_name_too_long = [
+    for name, payload in local._requested_instances : name
+    if length("${payload.instance.name}-${var.env}") > 57
+  ]
+}
+
+check "prod-should-not-be-standalone" {
+  assert {
+    condition     = !contains(local._production_like_envs, var.env) || length(local._standalone_requests) == 0
+    error_message = "Environment '${var.env}' has STANDALONE request(s): ${join(", ", local._standalone_requests)}. STANDALONE has no HA and no DR. If this is intentional (e.g. a short-lived parity test), this check is advisory only and does not block the apply."
+  }
+}
+
+check "instance-name-fits-with-environment" {
+  assert {
+    condition     = length(local._requests_with_name_too_long) == 0
+    error_message = "Request(s) whose instance.name is too long once \"-${var.env}\" is added: ${join(", ", local._requests_with_name_too_long)}. <name>-<env> must be at most 57 characters (49 for the name itself, so it fits every environment including preprod). Plan will fail in the redis module for these requests."
   }
 }

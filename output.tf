@@ -5,24 +5,24 @@ output "redis-instances" {
       redis-primary-id             = inst["redis-primary-id"]
       redis-primary-hostname       = inst["redis-primary-hostname"]
       redis-primary-port           = inst["redis-primary-port"]
-      resolved-environment         = inst["resolved-environment"]
+      resolved-environment         = var.env # the module no longer knows the environment (v6.0.0); key kept for consumers
       resolved-deployment-topology = inst["resolved-deployment-topology"]
       authorization-mode           = inst["authorization-mode"]
       deletion-protection-enabled  = inst["deletion-protection-enabled"]
 
-      redis-dr-id             = inst["redis-dr-id"]
-      redis-dr-hostname       = inst["redis-dr-hostname"]
-      redis-dr-port           = inst["redis-dr-port"]
-      geo-replication-enabled = inst["geo-replication-enabled"]
-      persistence-mode        = inst["persistence-mode"]
+      redis-dr-id              = inst["redis-dr-id"]
+      redis-dr-hostname        = inst["redis-dr-hostname"]
+      redis-dr-port            = inst["redis-dr-port"]
+      geo-replication-enabled  = inst["geo-replication-enabled"]
+      persistence-mode         = inst["persistence-mode"]
 
       redis-modules     = inst["redis-modules"]
       clustering-policy = inst["clustering-policy"]
       eviction-policy   = inst["eviction-policy"]
 
-      subnet-id                   = inst["subnet-id"]
-      private-endpoint-primary-id = inst["private-endpoint-primary-id"]
-      private-endpoint-dr-id      = inst["private-endpoint-dr-id"]
+      subnet-id                    = inst["subnet-id"]
+      private-endpoint-primary-id  = inst["private-endpoint-primary-id"]
+      private-endpoint-dr-id       = inst["private-endpoint-dr-id"]
     }
   }
 }
@@ -38,10 +38,10 @@ output "derived-config-by-instance" {
   value = {
     for name, cfg in local.redis : name => {
       deployment-topology = cfg["deployment-topology"]
-      dr-location         = cfg["dr-location"]
-      tags                = cfg.tags
-      redis-modules       = cfg["redis-modules"]
-      eviction-policy     = cfg["eviction-policy"]
+      dr-location          = cfg["dr-location"]
+      tags                 = cfg.tags
+      redis-modules        = cfg["redis-modules"]
+      eviction-policy      = cfg["eviction-policy"]
     }
   }
 }

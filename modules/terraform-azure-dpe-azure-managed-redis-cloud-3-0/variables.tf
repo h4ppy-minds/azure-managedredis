@@ -4,8 +4,13 @@
 
 # --- REQUIRED ---
 variable "name" {
-  description = "Base name of the AMR instance to be created. Environment is appended as a suffix (e.g. name = \"cfes-amr\", environment = \"prod\" -> \"cfes-amr-prod\"). Required — no default, to prevent accidentally deploying under a placeholder name."
+  description = "Full base name of the AMR instance, environment included (e.g. \"orders-cache-dev\"). The caller builds it; this module has no notion of environment and only adds fixed affixes: \"-dr\" for the DR instance, \"pe-\"/\"psc-\" for private endpoints, \"lock-\" for deletion locks. Required — no default, to prevent accidentally deploying under a placeholder name."
   type        = string
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{0,55}[a-z0-9]$", var.name))
+    error_message = "name must be lowercase letters, numbers and hyphens, start with a letter, end with a letter or number, and be at most 57 characters (Azure's 60-character limit minus the \"-dr\" suffix)."
+  }
 }
 
 # --- REQUIRED ---
@@ -26,17 +31,6 @@ variable "tags" {
   type        = map(string)
   default     = null
   nullable    = true
-}
-
-# --- REQUIRED ---
-variable "environment" {
-  description = "Deployment environment: dev, qa, uat, or prod. Used for naming, and gates DR/geo-replication topology safety checks. Required — no sensible module-wide default exists for this."
-  type        = string
-
-  validation {
-    condition     = contains(["dev", "qa", "uat", "prod"], var.environment)
-    error_message = "environment must be one of: dev, qa, uat, prod."
-  }
 }
 
 ############################################
@@ -560,13 +554,6 @@ check "geo-replication-requires-supported-sku" {
       "FlashOptimized_A2000", "FlashOptimized_A4500",
     ], var.node-type)
     error_message = "node-type '${var.node-type}' does not support geo-replication (deployment-topology = DR-ActiveActive). Use Balanced_B10+ or a supported ComputeOptimized/MemoryOptimized/FlashOptimized SKU."
-  }
-}
-
-check "prod-should-not-be-standalone" {
-  assert {
-    condition     = !(local.is-prod && local.deployment-topology == "STANDALONE")
-    error_message = "environment = prod with deployment-topology = STANDALONE has no HA and no DR. If this is intentional (e.g. a short-lived prod-parity test), this check is advisory only and does not block the apply."
   }
 }
 

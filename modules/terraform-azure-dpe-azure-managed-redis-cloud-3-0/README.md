@@ -6,9 +6,11 @@ Enterprise-based) instance — sizing, HA/clustering, persistence, auth mode,
 a private endpoint (always created), deletion protection, and optional DR
 with active-active geo-replication.
 
-Current module version: **5.3.0** — see [CHANGELOG.md](./CHANGELOG.md).
-5.3.0 is additive (Redis modules support). If you're upgrading from 4.x,
-read the CHANGELOG's `5.0.0` entry in full first — that one is breaking.
+Current module version: **6.0.0** — see [CHANGELOG.md](./CHANGELOG.md).
+6.0.0 is breaking for callers only: the `environment` input is gone and the
+caller passes the full name (see "Naming: the caller owns environments").
+Azure resource names are unchanged, so existing instances plan with no
+changes. If you're upgrading from 4.x, read the `5.0.0` entry in full too.
 
 ## Naming convention: hyphens, not underscores
 
@@ -25,6 +27,26 @@ you might reflexively type an underscore.
 There is no `provider "azurerm" {}` block anywhere in this module. A
 reusable module should never dictate auth or subscription context to its
 caller — that's the root module's job.
+
+## Naming: the caller owns environments
+
+This module has no notion of environment. The caller passes the full base
+name, environment included (e.g. `orders-cache-dev`), and the module only
+adds fixed affixes:
+
+| Resource | Name |
+|---|---|
+| Primary cache | `<name>` |
+| DR cache | `<name>-dr` |
+| Private endpoints | `pe-<name>`, `pe-<name>-dr` |
+| Private service connections | `psc-<name>`, `psc-<name>-dr` |
+| Deletion locks | `lock-<name>`, `lock-<name>-dr` |
+
+`name` must be lowercase letters, numbers and hyphens, start with a letter,
+end with a letter or number, and be at most 57 characters (Azure's 60 minus
+`-dr`). Which environments exist, and the rules that differ per environment
+(for example warning on STANDALONE in production), live in the onboarding
+template.
 
 ## node-type is required — no default
 
@@ -225,13 +247,15 @@ the first `BF.ADD`. Filters created with `BF.RESERVE` ignore it. RedisBloom's
 built-in defaults are `ERROR_RATE 0.01 INITIAL_SIZE 100`, so leave
 `redis-module-args` empty unless a team has a specific reason.
 
+**Custom data-access policies.** Azure doesn't support custom access
+strings (read-only or limited ACLs) on an instance with any module enabled;
+only full-access assignments work there.
+
 > ⚠️ **Create-time only.** Azure cannot load, unload or reconfigure a module
 > on a running instance. Adding, removing or changing a module, its args,
 > or the clustering policy (which RediSearch changes) on an existing
 > instance **destroys and recreates it, and all data is lost**. Treat it as
-> a migration. `deletion-protection-enabled = true` blocks the replacement
-> until it's temporarily disabled. Always read the plan for
-> `must be replaced` before applying.
+> a migration. Always read the plan for `must be replaced` before applying.
 
 ## Persistence
 
@@ -253,8 +277,11 @@ deletion-protection-enabled = true # default
 
 Implemented via an `azurerm_management_lock` (`CanNotDelete`) —
 `azurerm_managed_redis` has no native `deletion_protection_enabled`
-argument of its own. Also blocks any change that forces resource
-replacement (e.g. `node-type`) until temporarily disabled.
+argument of its own. The lock blocks deletes made **outside** Terraform
+(Portal, CLI, another pipeline). It does **not** block a Terraform-driven
+destroy or forced replacement: the lock depends on the instance, so
+Terraform removes the lock first. Guard those with a plan review or a
+pipeline check on `delete` actions.
 
 ## DR gets its own resource group — production recommendation
 
@@ -285,7 +312,8 @@ for workloads with a documented DR/secondary-region posture.
 | `main.tf` | The primary `azurerm_managed_redis`, an optional `dr`, and the deletion-protection `azurerm_management_lock`(s) |
 | `geo-replication.tf` | `azurerm_managed_redis_geo_replication`, only for `deployment-topology = DR-ActiveActive` |
 | `network.tf` | Private endpoint(s) only — no DNS zone or VNet link resources |
-| `outputs.tf` | Instance identity (including port), topology/persistence/auth status, networking outputs |
+| `outputs.tf` | Instance identity (including port), topology/persistence/auth status, applied modules and policies, networking outputs |
+| `tests/redis-modules.tftest.hcl` | Plan-only `terraform test` suite for naming and Redis modules (Terraform >= 1.7, uses `mock_provider`, no Azure access needed) |
 
 ## Usage
 
@@ -298,10 +326,9 @@ provider "azurerm" {
 module "redis" {
   source = "./"
 
-  name                 = "cfes-amr"
+  name                 = "cfes-amr-prod" # full name, environment included
   location             = "eastus2"
   resource-group-name  = "cfes-amr-eastus2-prod-rg"
-  environment          = "prod"
   deployment-topology  = "DR-ActiveActive"
   dr-location          = "centralus"
   node-type            = "Balanced_B10"
@@ -324,8 +351,6 @@ module "redis" {
   Managed Redis today.
 - `MicrosoftEntraID` authorization mode requires an out-of-band data-plane
   grant not automatable by this module today.
-- `deletion-protection-enabled = true` blocks any change that forces
-  resource replacement (e.g. `node-type`) until temporarily disabled.
 - Tag changes to an existing instance are ignored by design — see "Tags are
   preserved across updates" above.
 - This module assumes DNS automation (Infoblox or equivalent) exists
@@ -335,12 +360,17 @@ module "redis" {
   it against your installed provider version before depending on it.
 - No diagnostic settings / Log Analytics wiring yet.
 - No customer-managed key (CMK) encryption support yet.
-- `node-type` changes force replacement of the instance (Azure API
-  behavior).
+- `node-type` changes: scaling up within a tier is usually in place; Azure
+  may force replacement for a scale-down or a tier change, and never allows
+  moving to or from Flash.
 - `redis-modules` / `redis-module-args` changes force replacement of the
   instance (Azure API behavior — modules are create-time only).
 - Module versions are managed by Azure; they can't be pinned or upgraded
   from this module.
+- `deletion-protection-enabled = true` does **not** stop a Terraform-driven
+  destroy (removing the instance from the caller's config, or a forced
+  replacement): Terraform removes the lock first. It protects against
+  deletes outside Terraform (Portal, CLI).
 
 ## Roadmap
 

@@ -5,9 +5,10 @@ JSON file per instance, one PR per request, no shared file to
 merge-conflict over — same pattern as the Valkey onboarding root, adapted
 to Azure.
 
-Paired with redis module **v5.3.0** — see that module's CHANGELOG. (v5.0.0
-was the breaking release this template's `v2` was updated against; v5.3.0
-adds Redis modules support.)
+Template **3.2.0**, paired with redis module **v6.0.0**. Module 6.0.0
+removed the module's `environment` input: this template now owns the list
+of environments and passes the module the full name (see "Environments are
+owned by this template"). See both CHANGELOGs.
 
 ## How it works
 
@@ -28,8 +29,36 @@ adds Redis modules support.)
 4. **`main.tf`** calls `module "redis"` once per resulting instance via
    `for_each`, passing that staging map through almost verbatim.
 
-`terraform plan -var env=dev` (or `qa`/`uat`/`prod`) picks up every
-request file targeting that environment automatically.
+`terraform plan -var env=dev` (or `qa`/`uat`/`preprod`/`prod`) picks up
+every request file targeting that environment automatically.
+
+## Environments are owned by this template
+
+The redis module (v6.0.0+) has no notion of environment. Everything
+environment-specific lives here:
+
+| What | Where |
+|---|---|
+| The list of environments: `dev`, `qa`, `uat`, `preprod`, `prod` | `variables.tf` (`env` validation) and the intake schema's `environment` enum |
+| Subscription, resource group and network per environment and region | `default.json` → `environments.<env>` |
+| Resource names: `<instance.name>-<env>` passed to the module as `name` | `main.tf` |
+| Which environments are production-like (`preprod`, `prod`) | `locals.tf` → `_production_like_envs`, used by the `prod-should-not-be-standalone` check |
+| `environment` tag | `locals.tf` Layer 4 |
+
+The module then adds only fixed affixes, so a request named `orders-cache`
+in `preprod` creates `orders-cache-preprod`, `orders-cache-preprod-dr`,
+`pe-orders-cache-preprod`, `lock-orders-cache-preprod`, and so on.
+
+**Name length.** The module caps the full name at 57 characters (Azure's
+60 minus `-dr`). The intake schema therefore caps `instance.name` at 49
+characters, so `<name>-preprod` (the longest suffix) always fits, and the
+`instance-name-fits-with-environment` check names any request that doesn't.
+
+**Adding another environment** means: add it to the `env` validation in
+`variables.tf` and to the schema's `environment` enum, add an
+`environments.<env>` block to `default.json` (every region it will use),
+add it to `_production_like_envs` if it's production-like, then create its
+pipeline workspace with `env = <name>`. The module needs no change.
 
 ## Naming convention: kebab-case Terraform surface, unchanged JSON schema
 
@@ -124,15 +153,16 @@ plus optional per-module `redis_module_args`:
   template defaults it to `NoEviction` instead of `default.json`'s value.
   An explicit conflicting value is forced to `NoEviction` by the module,
   with a warning, and rejected by the intake schema.
+- **Data-access grants:** on a cache with any module, Azure allows only
+  full-access assignments (no read-only or limited ACLs).
 
 > ⚠️ **Modules are create-time only.** Adding, removing or changing
 > `redis_modules` / `redis_module_args` on an **existing** request
-> destroys and recreates that cache, and all data is lost. With
-> `deletion_protection_enabled = true` the apply is blocked instead.
-> Review every PR that touches these fields for `must be replaced` in the
-> plan. The four original fixtures deliberately don't use modules, so
-> already-deployed test caches are never replaced by this release; module
-> coverage lives in the new `test-ha-modules-cache.json`.
+> destroys and recreates that cache, and all data is lost. Review every PR
+> that touches these fields for `must be replaced` in the plan. The four
+> original fixtures deliberately don't use modules, so already-deployed
+> test caches are never replaced; module coverage lives in
+> `test-ha-modules-cache.json`.
 
 ## Regions are first-class — any configured region works as primary OR DR
 
@@ -178,6 +208,12 @@ files targeting the same environment share an `instance.name`.
 
 ```powershell
 terraform init
-terraform plan -var env=dev
+terraform plan -var env=dev        # or qa / uat / preprod / prod
 terraform apply -var env=dev
 ```
+
+Each environment has its own pipeline workspace with `env` set; a
+`preprod` workspace needs the preprod subscription's credentials, and the
+`preprod` block in `default.json` must have real values (the shipped block
+has `REPLACE-ME` placeholders for networking and a placeholder
+subscription ID).
