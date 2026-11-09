@@ -5,7 +5,7 @@
 #
 # Every module argument below matches local.redis's own kebab-case keys
 # almost verbatim (see locals.tf Layer 3) — the module's public interface
-# is kebab-case as of v5.0.0, and this root's staging map was built to
+# is kebab-case as of v0.2.0, and this root's staging map was built to
 # mirror it 1:1 rather than translating names again here.
 #
 # No separate alerting module call here — the redis module has no
@@ -21,10 +21,10 @@ module "redis" {
   for_each = local.redis
 
   # --- Identity ---
-  # The module has no notion of environment (v6.0.0): this template owns
+  # The module has no notion of environment (v0.3.0): this template owns
   # environments and passes the FULL base name, environment included. The
   # module only adds fixed affixes (-dr, pe-, psc-, lock-), so Azure names
-  # are identical to what module 5.x built from name + environment.
+  # are identical to what module 0.2.x built from name + environment.
   name                 = "${each.value.name}-${each.value.environment}"
   location             = each.value.location
   resource-group-name  = each.value.resource-group-name
@@ -36,7 +36,7 @@ module "redis" {
   geo-replication-group-name  = each.value.geo-replication-group-name
 
   # --- Sizing — always explicit; the module has no default of its own
-  # any more (v5.0.0), so local.redis always resolves a real value
+  # any more (v0.2.0), so local.redis always resolves a real value
   # (falling back to default.json.node_type when a request omits it).
   node-type = each.value.node-type
 

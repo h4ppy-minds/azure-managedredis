@@ -8,15 +8,41 @@ which module version it's paired with.
 
 ## [Unreleased]
 
-## [3.2.0] - 2026-10-28 (paired with redis module v6.0.0)
+## [0.4.0] - 2026-11-09 (paired with redis module v0.4.0)
+
+### Added
+- **A second private endpoint for every instance, in the other region**,
+  matching the org's PostgreSQL module. The paired region (from
+  `dr_region_pairs`) and its resource group and subnet (from
+  `environments.<env>.regions`) are now resolved for **every** request, not
+  only DR topologies, and passed to the module. Endpoint counts:
+  STANDALONE/HA 2, DR topologies 4. No request-file changes.
+- `redis-instances` output: `private-endpoint-primary-paired-region-id` and
+  `private-endpoint-dr-paired-region-id`.
 
 ### Changed
-- **This template now owns environments.** Module 6.0.0 removed its
+- `dr-requires-supported-region-pair` now applies to every request (every
+  location needs a pair) and names the offending requests.
+- `dr-location-is-a-configured-region` message now covers the paired-region
+  endpoint as well as DR instances.
+
+### Migration
+- Upgrade the module to 0.4.0 at the same time; template 0.4.0 does not
+  work with module 0.3.0 (it reads the module's new endpoint outputs).
+- Every existing STANDALONE/HA cache plans as **1 to add, 0 to change, 0 to
+  destroy**: its new paired-region endpoint. Verified by applying template
+  0.3.0 + module 0.3.0 and planning 0.4.0 + 0.4.0 against the same state.
+- Infoblox must register the new endpoints' IPs per region before clients
+  in the paired region can use them.
+
+## [0.3.0] - 2026-10-28 (paired with redis module v0.3.0)
+
+### Changed
+- **This template now owns environments.** Module 0.3.0 removed its
   `environment` input, so `main.tf` passes the full name
   `"<instance.name>-<env>"` as `name` and no longer passes `environment`.
   Azure resource names are unchanged, so existing caches plan with **no
-  changes** (verified by applying template 3.1.0 + module 5.3.0, then
-  planning 3.2.0 + 6.0.0 against the same state).
+  changes**.
 - The `redis-instances` output keeps its `resolved-environment` key; its
   value now comes from `var.env` (the module no longer outputs it).
 - Intake schema: `instance.name` is now capped at 49 characters (was 57),
@@ -35,12 +61,12 @@ which module version it's paired with.
   `<name>-<env>` exceeds 57 characters (the module then fails the plan).
 
 ### Migration
-- Upgrade the module to 6.0.0 at the same time; template 3.2.0 does not
-  work with module 5.x (it no longer passes `environment`).
+- Upgrade the module to 0.3.0 at the same time; template 0.3.0 does not
+  work with module 0.2.6 (it no longer passes `environment`).
 - Run `terraform plan` on every workspace before applying: expect no
   resource changes, only output changes if any.
 
-## [3.1.0] - 2026-09-24 (paired with redis module v5.3.0)
+## [0.2.1] - 2026-09-24 (paired with redis module v0.2.6)
 
 ### Added
 - **`redis_modules` / `redis_module_args` request fields**, for example
@@ -78,7 +104,7 @@ which module version it's paired with.
   does not short-circuit on all Terraform/OpenTofu versions. It now uses a
   conditional.
 
-## [3.0.0] - 2026-08-25 (paired with redis module v5.2.0)
+## [0.2.0] - 2026-08-25 (paired with redis module v0.2.6)
 
 ### Changed — BREAKING (default.json schema)
 - **`environments.<env>.location` and `environments.<env>.networking`
@@ -96,7 +122,7 @@ which module version it's paired with.
 - **`environments.<env>.dr_networking` removed** — folded into the
   unified `regions` map above.
 - **DR now resolves its own resource group**, via the redis module's new
-  `dr-resource-group-name` variable (v5.2.0), instead of implicitly
+  `dr-resource-group-name` variable (v0.2.6), instead of implicitly
   sharing the primary's resource group. Every environment's `default.json`
   entry in this release gives each region (including the DR region) a
   distinct resource group name, following standard Azure guidance (one
@@ -122,17 +148,17 @@ which module version it's paired with.
   `centralus` as their primary previously landed in the eastus2 resource
   group and eastus2 subnet, since neither was region-aware).
 
-## [2.0.0] - 2026-08-22 (paired with redis module v5.0.0)
+## [0.1.1] - 2026-08-22 (paired with redis module v0.2.3)
 
 Directed change following senior leadership review, following the same
-breaking changes made to the redis module. See that module's `5.0.0`
+breaking changes made to the redis module. See that module's `0.2.0`
 CHANGELOG entry for the full rationale; this entry covers only what
 changed in the template itself.
 
 ### Changed — BREAKING
 - **`locals.tf` Layer 3's staging map now uses kebab-case keys**
   (`resource-group-name`, `node-type`, `deployment-topology`, ...),
-  matching the redis module's v5.0.0 variable names 1:1. Request-file
+  matching the redis module's v0.2.3 variable names 1:1. Request-file
   JSON field names are unchanged (still snake_case) — only the
   Terraform-side staging map and the module call in `main.tf` changed.
 - **`geo_replication_group_name` fallback fixed.** Previously fell back to

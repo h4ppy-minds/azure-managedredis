@@ -3,14 +3,15 @@
 Single, reusable Terraform module for an
 [Azure Managed Redis](https://learn.microsoft.com/en-us/azure/redis/) (Redis
 Enterprise-based) instance — sizing, HA/clustering, persistence, auth mode,
-a private endpoint (always created), deletion protection, and optional DR
+private endpoints in both regions, deletion protection, and optional DR
 with active-active geo-replication.
 
-Current module version: **6.0.0** — see [CHANGELOG.md](./CHANGELOG.md).
-6.0.0 is breaking for callers only: the `environment` input is gone and the
-caller passes the full name (see "Naming: the caller owns environments").
-Azure resource names are unchanged, so existing instances plan with no
-changes. If you're upgrading from 4.x, read the `5.0.0` entry in full too.
+Current module version: **0.4.0** — see [CHANGELOG.md](./CHANGELOG.md).
+0.4.0 gives every instance a second private endpoint in the other region
+(see "Private endpoints"). Existing STANDALONE/HA instances only gain that one
+endpoint; nothing existing changes. 0.3.0 was breaking for callers only: the
+`environment` input is gone and the caller passes the full name (see
+"Naming: the caller owns environments"). If you're upgrading from 0.1.x, read the `0.2.0` entry in full too.
 
 ## Naming convention: hyphens, not underscores
 
@@ -38,8 +39,8 @@ adds fixed affixes:
 |---|---|
 | Primary cache | `<name>` |
 | DR cache | `<name>-dr` |
-| Private endpoints | `pe-<name>`, `pe-<name>-dr` |
-| Private service connections | `psc-<name>`, `psc-<name>-dr` |
+| Private endpoints | `pe-<name>`, `pe-<name>-dr` (primary); `pe-<name>-drcache`, `pe-<name>-drcache-dr` (DR instance) |
+| Private service connections | `psc-` + the same suffixes |
 | Deletion locks | `lock-<name>`, `lock-<name>-dr` |
 
 `name` must be lowercase letters, numbers and hyphens, start with a letter,
@@ -55,14 +56,46 @@ you. `node-type` must always be supplied by the caller. Instance sizing is
 a caller/template policy decision, not something this module should guess
 at silently.
 
-## A private endpoint is always created — no toggle
+## Private endpoints
 
-Every instance this module creates gets a private endpoint: the primary
-unconditionally, and the DR instance too whenever `deployment-topology`
-creates one. There is no `create-private-endpoint`-style variable to opt
-out. Subnet info (`subnet-id`, or `subnet-name` + `vnet-name` +
-`vnet-resource-group-name`) is therefore always required — and DR subnet
-info is required too, whenever `deployment-topology` is a `DR-*` value.
+Same pattern as the org's PostgreSQL flexible-server module, which gives the
+primary **and every replica** two endpoints (`<server>-PE` + `<server>-PE-DR`):
+every instance gets an endpoint in **each** region.
+
+| Endpoint | Points to | Sits in | Created |
+|---|---|---|---|
+| `pe-<name>` | Primary | Primary's region (`location`, `subnet-*`) | Always |
+| `pe-<name>-dr` | Primary | Paired region (`dr-location`, `dr-subnet-*`, `dr-resource-group-name`) | Whenever `dr-location` is set, for **every** topology |
+| `pe-<name>-drcache` | DR instance | DR region | DR topologies only |
+| `pe-<name>-drcache-dr` | DR instance | Primary's region | DR topologies only |
+
+| Topology | Endpoints (with `dr-location` set) |
+|---|---|
+| STANDALONE / HA | 2 |
+| DR-ActivePassive / DR-ActiveActive | 4 |
+
+- `-dr` at the end of an endpoint name means "sits in the other region", as
+  in PostgreSQL's `-PE-DR`. The DR instance's endpoints use `drcache` so the
+  names never collide with the primary's.
+- Why the DR instance gets one in the primary's region: when only the
+  primary **cache** fails (its region is still up), apps there switch to the
+  DR instance and need a private path to it in their own region.
+- Each `-dr` endpoint is created after its instance's first one
+  (`depends_on`), as in the PostgreSQL module: two endpoint operations on the
+  same resource at once can fail with "another operation is in progress".
+- The paired-region endpoint gives clients in the paired region a private
+  IP in their own region. Traffic still goes to the primary's region, so it
+  adds cross-region latency and data-transfer cost, and it is **not**
+  failover: if the primary's region is down, this endpoint can't reach it.
+- `dr-location` must differ from `location`, and a paired-region subnet
+  (`dr-subnet-id`, or `dr-subnet-name` + `dr-vnet-name` +
+  `dr-vnet-resource-group-name`) is required whenever `dr-location` is set.
+- Leaving `dr-location` null on a STANDALONE/HA instance keeps the old
+  behaviour (one endpoint), so direct callers aren't forced to change. The
+  onboarding template always sets it.
+- DNS: two endpoints serve the same hostname with different private IPs.
+  Infoblox must answer per region (each region's clients get their own
+  region's IP), as it does for PostgreSQL.
 
 ## DNS is not this module's job
 
@@ -311,7 +344,7 @@ for workloads with a documented DR/secondary-region posture.
 | `data.tf` | Subnet lookups (primary and DR), only queried when an ID isn't supplied directly |
 | `main.tf` | The primary `azurerm_managed_redis`, an optional `dr`, and the deletion-protection `azurerm_management_lock`(s) |
 | `geo-replication.tf` | `azurerm_managed_redis_geo_replication`, only for `deployment-topology = DR-ActiveActive` |
-| `network.tf` | Private endpoint(s) only — no DNS zone or VNet link resources |
+| `network.tf` | Private endpoints only (primary, primary paired-region, DR) — no DNS zone or VNet link resources |
 | `outputs.tf` | Instance identity (including port), topology/persistence/auth status, applied modules and policies, networking outputs |
 | `tests/redis-modules.tftest.hcl` | Plan-only `terraform test` suite for naming and Redis modules (Terraform >= 1.7, uses `mock_provider`, no Azure access needed) |
 

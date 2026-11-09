@@ -94,7 +94,17 @@ output "private-endpoint-primary-id" {
   value       = azurerm_private_endpoint.primary.id
 }
 
+output "private-endpoint-primary-paired-region-id" {
+  description = "Resource ID of the primary instance's private endpoint in the paired region (pe-<name>-dr). Null when dr-location is not set."
+  value       = local.create-paired-region-endpoint ? azurerm_private_endpoint.primary-paired-region[0].id : null
+}
+
+output "private-endpoint-dr-paired-region-id" {
+  description = "Resource ID of the DR instance's private endpoint in the primary's region (pe-<name>-drcache-dr). Null unless deployment-topology is DR-ActivePassive or DR-ActiveActive."
+  value       = local.create-dr ? azurerm_private_endpoint.dr-paired-region[0].id : null
+}
+
 output "private-endpoint-dr-id" {
-  description = "Resource ID of the DR private endpoint. Null unless deployment-topology is DR-ActivePassive or DR-ActiveActive."
+  description = "Resource ID of the DR instance's own private endpoint (pe-<name>-drcache). Null unless deployment-topology is DR-ActivePassive or DR-ActiveActive."
   value       = local.create-dr ? azurerm_private_endpoint.dr[0].id : null
 }

@@ -134,12 +134,15 @@ locals {
     }
   ]...)
 
-  # --- Layer 3b: resolve DR location per instance, using the maps above.
-  # Still a separate map from _redis_raw for the same self-reference
-  # reason as Layer 3a.
+  # --- Layer 3b: resolve the PAIRED region per instance, using the maps
+  # above. Resolved for EVERY request, not just DR topologies: every
+  # primary gets a second private endpoint in its paired region (same
+  # pattern as the org's PostgreSQL servers), and DR topologies also put
+  # the DR instance there. Still a separate map from _redis_raw for the
+  # same self-reference reason as Layer 3a.
   _instance_dr_locations = {
-    for name, wants_dr in local._instance_wants_dr :
-    name => wants_dr ? try(local._dr_region_pairs[local._instance_locations[name]], null) : null
+    for name, payload in local._requested_instances :
+    name => try(local._dr_region_pairs[local._instance_locations[name]], null)
   }
 }
 
@@ -162,7 +165,7 @@ check "dr-location-is-a-configured-region" {
       # errors on a null value — which every non-DR request has.
       dr_loc == null ? true : contains(keys(try(local._env_infra.regions, {})), dr_loc)
     ])
-    error_message = "One or more DR requests resolved a dr_location that environment '${var.env}' has no regions entry for in default.json — the region pair exists globally (dr_region_pairs), but this environment hasn't been given resource_group_name/networking for it yet. Configured regions for this environment: ${join(", ", keys(try(local._env_infra.regions, {})))}."
+    error_message = "One or more requests resolved a paired region that environment '${var.env}' has no regions entry for in default.json — the region pair exists globally (dr_region_pairs), but this environment hasn't been given resource_group_name/networking for it yet, so the paired-region private endpoint (and any DR instance) has nowhere to go. Configured regions for this environment: ${join(", ", keys(try(local._env_infra.regions, {})))}."
   }
 }
 
@@ -199,10 +202,12 @@ locals {
 
       dr-location = local._instance_dr_locations[name]
 
-      # DR gets its OWN resource group/networking — looked up from
-      # dr-location the same way primary's came from location — rather
-      # than reusing primary's resource group. try() handles the
-      # non-DR case where dr-location is null (no DR region to look up).
+      # The paired region gets its OWN resource group/networking — looked
+      # up from dr-location the same way primary's came from location.
+      # Used for the primary's paired-region private endpoint (every
+      # topology) and, for DR topologies, the DR instance and its
+      # endpoint. try() covers a location with no pair, which the
+      # paired-region-is-supported check below reports.
       dr-resource-group-name = try(
         local._env_infra.regions[local._instance_dr_locations[name]].resource_group_name, null
       )
@@ -308,10 +313,9 @@ locals {
 check "dr-requires-supported-region-pair" {
   assert {
     condition = alltrue([
-      for name, wants_dr in local._instance_wants_dr :
-      !wants_dr || local._instance_dr_locations[name] != null
+      for name, dr_loc in local._instance_dr_locations : dr_loc != null
     ])
-    error_message = "One or more DR requests picked a primary `location` with no supported DR secondary. Cross-region DR is currently only supported between the pairs listed in default.json's dr_region_pairs (today: ${join(", ", [for p in local._dr_pair_list : "${p[0]} <-> ${p[1]}"])}). Either change that instance's location to a supported primary, or ask the platform team to add a new pair to default.json.dr_region_pairs."
+    error_message = "Request(s) whose `location` has no paired region: ${join(", ", [for name, dr_loc in local._instance_dr_locations : name if dr_loc == null])}. Every instance gets a second private endpoint in its paired region (and DR topologies put the DR instance there), so every location must be in default.json's dr_region_pairs (today: ${join(", ", [for p in local._dr_pair_list : "${p[0]} <-> ${p[1]}"])}). Either change that instance's location, or ask the platform team to add a pair. Non-DR requests in such a location get only their primary-region endpoint; DR requests fail in the redis module."
   }
 }
 

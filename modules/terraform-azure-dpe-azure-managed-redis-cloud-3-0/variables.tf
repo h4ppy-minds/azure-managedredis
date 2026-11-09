@@ -78,7 +78,7 @@ variable "deployment-topology" {
 
 # --- OPTIONAL ---
 variable "dr-location" {
-  description = "Azure region for the DR instance (e.g. centralus). Required whenever deployment-topology resolves to DR-ActivePassive or DR-ActiveActive (enforced by the dr-requires-location check and a matching lifecycle precondition) — no centralized default, since null is the meaningful 'no DR region chosen' state, not a value to retune."
+  description = "The paired (secondary) region, e.g. centralus. Used for (1) the primary's paired-region private endpoint, created for EVERY topology whenever this is set, and (2) the DR instance and its private endpoint. Required whenever deployment-topology resolves to DR-ActivePassive or DR-ActiveActive (lifecycle precondition); optional otherwise — leave null and no paired-region endpoint is created. Must differ from location."
   type        = string
   default     = null
   nullable    = true
@@ -87,7 +87,9 @@ variable "dr-location" {
 # --- OPTIONAL ---
 variable "dr-resource-group-name" {
   description = <<-EOT
-    Resource group for the DR instance and its private endpoint. Default
+    Resource group in the paired region (dr-location) for the DR instance,
+    its private endpoint, and the primary's paired-region private
+    endpoint. Default
     (when left null): falls back to resource-group-name — i.e. DR shares
     the primary's resource group unless you explicitly separate them.
 
@@ -162,7 +164,7 @@ variable "vnet-resource-group-name" {
 
 # --- OPTIONAL ---
 variable "dr-subnet-id" {
-  description = "Resource ID of the subnet in the DR region for the DR Redis private endpoint. Takes precedence over dr-subnet-name/dr-vnet-name/dr-vnet-resource-group-name. Required (by one route or the other) whenever deployment-topology resolves to a DR-* value — every DR instance gets a private endpoint the same as primary; there is no opt-out."
+  description = "Resource ID of the subnet in the paired region (dr-location), used by the primary's paired-region private endpoint and the DR instance's private endpoint. Takes precedence over dr-subnet-name/dr-vnet-name/dr-vnet-resource-group-name. Required (by one route or the other) whenever dr-location is set."
   type        = string
   default     = null
   nullable    = true
@@ -170,7 +172,7 @@ variable "dr-subnet-id" {
 
 # --- OPTIONAL ---
 variable "dr-subnet-name" {
-  description = "Name of the DR-region subnet to look up when dr-subnet-id is not supplied. Used together with dr-vnet-name and dr-vnet-resource-group-name."
+  description = "Name of the paired-region subnet to look up when dr-subnet-id is not supplied. Used together with dr-vnet-name and dr-vnet-resource-group-name."
   type        = string
   default     = null
   nullable    = true
@@ -178,7 +180,7 @@ variable "dr-subnet-name" {
 
 # --- OPTIONAL ---
 variable "dr-vnet-name" {
-  description = "Name of the DR-region virtual network containing dr-subnet-name."
+  description = "Name of the paired-region virtual network containing dr-subnet-name."
   type        = string
   default     = null
   nullable    = true
@@ -528,7 +530,7 @@ check "private-endpoint-requires-subnet" {
 check "dr-subnet-required" {
   assert {
     condition     = local.valid-dr-subnet-inputs
-    error_message = "deployment-topology = '${local.deployment-topology}' creates a DR instance, and every instance gets a private endpoint — no DR subnet was supplied. Set dr-subnet-id, or all of dr-subnet-name/dr-vnet-name/dr-vnet-resource-group-name."
+    error_message = "Something lands in the paired region (dr-location = '${coalesce(var.dr-location, "null")}': the primary's paired-region private endpoint${local.create-dr ? " and the DR instance's endpoint" : ""}), but no subnet there was supplied. Set dr-subnet-id, or all of dr-subnet-name/dr-vnet-name/dr-vnet-resource-group-name."
   }
 }
 

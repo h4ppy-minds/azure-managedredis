@@ -5,10 +5,11 @@ JSON file per instance, one PR per request, no shared file to
 merge-conflict over — same pattern as the Valkey onboarding root, adapted
 to Azure.
 
-Template **3.2.0**, paired with redis module **v6.0.0**. Module 6.0.0
-removed the module's `environment` input: this template now owns the list
-of environments and passes the module the full name (see "Environments are
-owned by this template"). See both CHANGELOGs.
+Template **0.4.0**, paired with redis module **v0.4.0**. 0.4.0 gives every
+instance a second private endpoint in the other region (see "Private
+endpoints in both regions"). 0.3.0 / module 0.3.0 moved environments into
+this template (see "Environments are owned by this template"). See both
+CHANGELOGs.
 
 ## How it works
 
@@ -34,7 +35,7 @@ every request file targeting that environment automatically.
 
 ## Environments are owned by this template
 
-The redis module (v6.0.0+) has no notion of environment. Everything
+The redis module (v0.3.0+) has no notion of environment. Everything
 environment-specific lives here:
 
 | What | Where |
@@ -47,7 +48,8 @@ environment-specific lives here:
 
 The module then adds only fixed affixes, so a request named `orders-cache`
 in `preprod` creates `orders-cache-preprod`, `orders-cache-preprod-dr`,
-`pe-orders-cache-preprod`, `lock-orders-cache-preprod`, and so on.
+`pe-orders-cache-preprod`, `pe-orders-cache-preprod-dr`,
+`lock-orders-cache-preprod`, and so on.
 
 **Name length.** The module caps the full name at 57 characters (Azure's
 60 minus `-dr`). The intake schema therefore caps `instance.name` at 49
@@ -62,7 +64,7 @@ pipeline workspace with `env = <name>`. The module needs no change.
 
 ## Naming convention: kebab-case Terraform surface, unchanged JSON schema
 
-The redis module's variables and outputs are all kebab-case as of v5.0.0
+The redis module's variables and outputs are all kebab-case as of v0.2.0
 (`resource-group-name`, `node-type`, `redis-primary-id`, ...). This
 template's own `locals.tf` Layer 3 builds a staging map with matching
 kebab-case keys, so `main.tf`'s module call is close to a pass-through.
@@ -73,23 +75,31 @@ the wrapper-API mapping docs and every existing request file for no real
 benefit; the translation from snake_case JSON to kebab-case Terraform
 happens once, inside `locals.tf`, and nowhere else needs to know about it.
 
-## Every instance gets a private endpoint — no toggle, no DNS zone
+## Private endpoints in both regions — no toggle, no DNS zone
 
-The redis module (v5.0.0) always creates a private endpoint for every
-instance — primary unconditionally, DR whenever the topology creates one.
-There's no `create_private_endpoint`-equivalent request field, and none is
-needed. **The module also no longer creates or links a private DNS
+Every instance gets **two** private endpoints, one in each region: the
+primary always, and the DR instance in DR topologies. This is the same
+pattern as the org's PostgreSQL module (`-PE` / `-PE-DR` on the primary and
+on every replica).
+
+| Request (`orders-cache`, dev, East US 2) | Endpoints |
+|---|---|
+| STANDALONE / HA (2) | `pe-orders-cache-dev` (East US 2), `pe-orders-cache-dev-dr` (Central US) |
+| DR-ActivePassive / DR-ActiveActive (4) | the two above + `pe-orders-cache-dev-drcache` (Central US) and `pe-orders-cache-dev-drcache-dr` (East US 2) for the DR instance |
+
+The paired region comes from `dr_region_pairs`, and its resource group and
+subnet from `environments.<env>.regions.<paired region>`, for **every**
+request, not only DR topologies. A Central US request gets its second
+endpoint in East US 2. There's no request field for any of this, and none
+is needed. DNS must answer per region (Infoblox), as for PostgreSQL. **The module also no longer creates or links a private DNS
 zone** — DNS resolution for these private endpoints is handled by
 infrastructure automation outside Terraform (Infoblox). This template has
 no DNS-related resources of its own either.
 
-Because DR private endpoints are no longer optional, `dr_networking` in
-`default.json` is now effectively **required** for any environment where
-a `DR-*` topology will be requested — an environment missing it will fail
-plan (via the module's own checks) the first time someone submits a
-`DR-ActivePassive`/`DR-ActiveActive` request there, rather than silently
-creating a DR instance with no private endpoint the way earlier versions
-did.
+Because every request now uses the paired region, **every** environment
+in `default.json` needs a `regions` entry for both regions of a pair. A
+missing one fails the `dr-location-is-a-configured-region` check for any
+request in that environment.
 
 ## Tags are preserved across updates (module-level, not template-level)
 
@@ -175,7 +185,7 @@ block" asymmetry any more. This means a client can request `centralus` as
 their **primary** region (not just as a DR target) as long as
 `environments.<env>.regions.centralus` exists in `default.json`.
 
-**DR gets its own resource group**, matching the redis module's v5.2.0
+**DR gets its own resource group**, matching the redis module's v0.2.4
 production recommendation (one resource group per region, per Azure's
 Cloud Adoption Framework guidance) — `dr-resource-group-name` is now
 resolved from the DR region's own `regions` entry, not the primary's
@@ -194,10 +204,11 @@ Two checks guard this:
 
 ## DR region pairs
 
-Cross-region DR is only supported between the pairs listed in
-`default.json`'s `dr_region_pairs` — currently `eastus2 <-> centralus`.
-Requesting DR from an unpaired `location` fails plan with a clear error
-(`dr-requires-supported-region-pair` check).
+Pairs are listed in `default.json`'s `dr_region_pairs`, currently
+`eastus2 <-> centralus`. They decide where the primary's second private
+endpoint goes (every request) and where a DR instance goes (DR topologies).
+A request in a `location` with no pair is reported by the
+`dr-requires-supported-region-pair` check.
 
 ## Uniqueness is enforced, not just documented
 

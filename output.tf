@@ -5,7 +5,7 @@ output "redis-instances" {
       redis-primary-id             = inst["redis-primary-id"]
       redis-primary-hostname       = inst["redis-primary-hostname"]
       redis-primary-port           = inst["redis-primary-port"]
-      resolved-environment         = var.env # the module no longer knows the environment (v6.0.0); key kept for consumers
+      resolved-environment         = var.env # the module no longer knows the environment (v0.3.0); key kept for consumers
       resolved-deployment-topology = inst["resolved-deployment-topology"]
       authorization-mode           = inst["authorization-mode"]
       deletion-protection-enabled  = inst["deletion-protection-enabled"]
@@ -22,7 +22,9 @@ output "redis-instances" {
 
       subnet-id                    = inst["subnet-id"]
       private-endpoint-primary-id  = inst["private-endpoint-primary-id"]
+      private-endpoint-primary-paired-region-id = inst["private-endpoint-primary-paired-region-id"]
       private-endpoint-dr-id       = inst["private-endpoint-dr-id"]
+      private-endpoint-dr-paired-region-id = inst["private-endpoint-dr-paired-region-id"]
     }
   }
 }

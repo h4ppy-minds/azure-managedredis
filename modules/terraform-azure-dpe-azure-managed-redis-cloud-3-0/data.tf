@@ -9,13 +9,13 @@ data "azurerm_subnet" "subnet" {
   resource_group_name  = var.vnet-resource-group-name
 }
 
-# Only queried when there's a DR instance, the caller didn't pass
+# Only queried when something lands in the paired region (the DR instance
+# or the primary's paired-region endpoint), the caller didn't pass
 # dr-subnet-id directly, and a dr-subnet-name was actually given to look
-# up. Keyed off the RAW var.* inputs (not a resolved local) to avoid a
-# dependency cycle: local.create-dr does not itself depend on this data
-# source, so this is safe.
+# up. Keyed off locals that depend only on RAW var.* inputs, so there is
+# no dependency cycle with this data source.
 data "azurerm_subnet" "dr-subnet" {
-  count = local.create-dr && var.dr-subnet-id == null && var.dr-subnet-name != null ? 1 : 0
+  count = (local.create-dr || local.create-paired-region-endpoint) && var.dr-subnet-id == null && var.dr-subnet-name != null ? 1 : 0
 
   name                 = var.dr-subnet-name
   virtual_network_name = var.dr-vnet-name

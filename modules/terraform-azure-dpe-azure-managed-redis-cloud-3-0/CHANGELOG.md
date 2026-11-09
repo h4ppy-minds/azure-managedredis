@@ -11,16 +11,61 @@ All notable changes to this module are documented here. Format follows
 - Customer-managed key (CMK) encryption support
 - Automate the Entra ID data-plane grant once azurerm supports it
 
-## [6.0.0] - 2026-10-28
+## [0.4.0] - 2026-11-09
+
+### Added
+- **A second private endpoint for every instance, in the other region**,
+  matching the org's PostgreSQL module (`<server>-PE` + `<server>-PE-DR` on
+  the primary and on every replica). Endpoint counts: STANDALONE/HA 2, DR
+  topologies 4.
+  - Primary: `azurerm_private_endpoint.primary-paired-region`, named
+    `pe-<name>-dr`, in the paired region. Created for **every** topology
+    whenever `dr-location` is set; uses the existing paired-region inputs
+    (`dr-location`, `dr-resource-group-name`, `dr-subnet-*`).
+  - DR instance: `azurerm_private_endpoint.dr-paired-region`, named
+    `pe-<name>-drcache-dr`, in the primary's region (primary's subnet and
+    resource group). DR topologies only.
+- Each second endpoint `depends_on` its instance's first endpoint, as in the
+  PostgreSQL module, so two endpoint operations never run on the same
+  resource at once. The primary's paired-region endpoint also waits for
+  `azurerm_managed_redis_geo_replication.geo`, extending the 0.2.5 fix
+  (which stays on `azurerm_private_endpoint.dr`); `dr-paired-region` waits
+  for `dr`, so it is covered too. No effect outside DR-ActiveActive.
+- Outputs `private-endpoint-primary-paired-region-id` and
+  `private-endpoint-dr-paired-region-id`.
+- Preconditions: `dr-location` must differ from `location`; a paired-region
+  subnet is required whenever `dr-location` is set.
+- Tests for endpoint names, regions and targets (both directions), plus the
+  error cases. 24 runs.
+
+### Changed
+- **DR instance's endpoint renamed** from `pe-<name>-dr` / `psc-<name>-dr`
+  to `pe-<name>-drcache` / `psc-<name>-drcache`, freeing `-dr` for the
+  primary's paired-region endpoint. No DR-topology instances exist today, so
+  nothing deployed is affected. An existing DR instance would have its
+  endpoint replaced (brief loss of private connectivity on that endpoint,
+  new IP for Infoblox to register).
+- `dr-location`, `dr-resource-group-name` and `dr-subnet-*` now describe the
+  paired region, used by both the paired-region endpoint and the DR
+  instance. The `dr-subnet` lookup and the `dr-subnet-required` check now
+  apply whenever `dr-location` is set, not only for DR topologies.
+
+### Migration
+- Direct callers that don't set `dr-location` on STANDALONE/HA see no change.
+- Through the onboarding template (0.4.0+), every existing STANDALONE/HA
+  instance plans as **1 to add, 0 to change, 0 to destroy** (verified by
+  applying 0.3.0 and planning 0.4.0 against the same state).
+
+## [0.3.0] - 2026-10-28
 
 ### Changed — BREAKING (module inputs only; Azure resources are unchanged)
 - **`environment` variable removed.** The module no longer knows about
   environments; the onboarding template owns them. Callers pass the full
   base name, environment included (`name = "orders-cache-dev"`), and the
   module adds only fixed affixes: `-dr`, `pe-`, `psc-`, `lock-`. The
-  resulting Azure names are identical to 5.x (`<name>-<env>`,
+  resulting Azure names are identical to 0.2.6 (`<name>-<env>`,
   `<name>-<env>-dr`, `pe-<name>-<env>`, ...), so existing instances plan
-  with **no changes**. Verified by applying 5.3.0 and planning 6.0.0
+  with **no changes**. Verified by applying 0.2.6 and planning 0.3.0
   against the same state.
 - **`name` is now validated:** lowercase letters, numbers and hyphens,
   starting with a letter, ending with a letter or number, at most 57
@@ -39,11 +84,11 @@ All notable changes to this module are documented here. Format follows
 
 ### Migration
 - Replace `name = "x"` + `environment = "dev"` with `name = "x-dev"` and
-  remove `environment`. The onboarding template does this from 3.2.0.
+  remove `environment`.
 - Run `terraform plan` on every workspace before applying. It must show no
   resource changes; any `must be replaced` means a name differs, so stop.
 
-## [5.3.0] - 2026-09-24
+## [0.2.6] - 2026-09-24
 
 ### Added
 - **Redis modules support: `redis-modules` (list) and `redis-module-args`
@@ -70,7 +115,7 @@ All notable changes to this module are documented here. Format follows
 - Outputs `redis-modules`, `clustering-policy` and `eviction-policy`,
   showing the effective values after any forcing.
 - `tests/redis-modules.tftest.hcl`: a plan-only `terraform test` suite
-  (Terraform >= 1.7 for `mock_provider`).
+  (13 runs; Terraform >= 1.7 for `mock_provider`).
 
 ### Changed
 - `clustering-policy` now also accepts `EnterpriseCluster`.
@@ -80,9 +125,21 @@ All notable changes to this module are documented here. Format follows
 ### Notes
 - Modules are create-time only. Changing `redis-modules` or
   `redis-module-args` on an existing instance forces replacement, with
-  data loss.
+  data loss, and is blocked by `deletion-protection-enabled = true`.
 
-## [5.2.0] - 2026-08-25
+## [0.2.5] - 2026-09-11
+
+Bug fix found during DR-ActiveActive integration testing.
+
+### Fixed
+- Race condition between the DR private endpoint and geo-replication:
+  `azurerm_private_endpoint.dr` and `azurerm_managed_redis_geo_replication.geo`
+  only referenced `azurerm_managed_redis.dr[0].id`, with no dependency
+  between the two themselves. **Fix:** `azurerm_private_endpoint.dr` has
+  `depends_on = [azurerm_managed_redis_geo_replication.geo]`, forcing
+  geo-replication to finish first.
+
+## [0.2.4] - 2026-09-10
 
 ### Added
 - **`dr-resource-group-name` variable.** DR's `azurerm_managed_redis` and
@@ -98,26 +155,58 @@ All notable changes to this module are documented here. Format follows
   See the variable's own description in `variables.tf` for the full
   rationale.
 
-## [5.1.0] - 2026-08-25
-
-Bug fix found during integration testing (flagged by Siva Rajadurai).
+## [0.2.3] - 2026-08-26
 
 ### Fixed
-- **Both `azurerm_private_endpoint` resources now `ignore_changes` on
-  `private_dns_zone_group`, not just `tags`.** Infoblox attaches a
-  `private_dns_zone_group` to each private endpoint out-of-band, after
-  Terraform creates it — the same class of problem tag-preservation
-  already solved for `tags` in v5.0.0, just for a second field we hadn't
-  covered yet. Without this, every `plan` saw Infoblox's attachment as
-  drift (since this module declares no `private_dns_zone_group` block at
-  all) and proposed removing it — fighting the external DNS automation on
-  every single apply. This was blocking integration testing entirely.
-  **Migration:** add `private_dns_zone_group` to the existing
-  `ignore_changes` list on both `azurerm_private_endpoint.primary` and
-  `.dr` in `network.tf`. No variable or interface changes — this is a
-  drop-in patch.
+- Fixed drift on `azurerm_private_endpoint` resources caused by
+  Azure-managed updates to the `private_dns_zone_group` configuration.
+- Updated the private endpoint lifecycle configuration in `network.tf` to
+  ignore changes to both `tags` and `private_dns_zone_group`, preventing
+  unnecessary Terraform plan and apply operations when Azure modifies the
+  private DNS zone association outside of Terraform.
 
-## [5.0.0] - 2026-08-22
+### Changed
+- Updated private endpoint lifecycle configuration:
+
+```hcl
+lifecycle {
+  ignore_changes = [
+    tags,
+    private_dns_zone_group
+  ]
+}
+```
+
+## [0.2.2] - 2026-08-24
+
+### Changed
+- Updated supported SKU definitions in `variables.tf` to align with the
+  latest Azure Managed Redis SKU offerings:
+  - Memory Optimized
+  - Balanced
+  - Compute Optimized
+  - Flash Optimized
+
+### Added
+- Added validation and documentation for Active Geo-Replication SKU support.
+- Active Geo-Replication is supported only on eligible SKUs:
+  - Available for Memory Optimized, Balanced, and Compute Optimized tiers.
+  - Not supported on Balanced `B0` and `B1` SKUs.
+  - Not supported on Flash Optimized SKUs.
+
+### Documentation
+- Updated SKU lists and validation references in `variables.tf`.
+- Added note clarifying that Active Geo-Replication is unavailable for
+  Balanced `B0`, Balanced `B1`, and all Flash Optimized SKUs.
+
+> **Important:** Balanced `B0` and `B1` SKUs and all Flash Optimized SKUs do
+> not support Active Geo-Replication.
+
+## [0.2.1] - 2026-08-24
+
+### Updated CHangelog Md
+
+## [0.2.0] - 2026-08-22
 
 Directed change following senior leadership review. Every item below is
 breaking.
@@ -221,7 +310,7 @@ breaking.
   actually branches on them; only `is-prod` is used, by
   `prod-should-not-be-standalone`).
 
-## [4.1.0] - 2026-08-22
+## [0.1.0] - 2026-08-22
 
 Bug-fix and DR-networking-completeness release found during live
 four-topology testing (STANDALONE / HA / DR-ActivePassive /
@@ -285,7 +374,7 @@ resources (was 5) and `DR-ActiveActive` produces 8 (was 6) — the DR
 private endpoint and DR-region DNS zone link that were silently missing
 before are now created.
 
-## [4.0.0] - 2026-08-22
+## [0.0.4] - 2026-08-22
 
 ### Changed — BREAKING
 - **`prod_mode` replaced by `deployment_topology`.** The single topology
@@ -365,12 +454,12 @@ before are now created.
   `environment == "prod"`.
 - `backup_enabled` output (replaced by `persistence_mode`).
 
-## [3.0.0] - 2026-08-22
+## [0.0.3] - 2026-08-22
 
 Restructures the module to match a reviewed pattern (single defaults file,
 effective-value locals, REQUIRED/OPTIONAL variable banners, cross-field
 `check` blocks, no in-module provider config). Behaviorally equivalent to
-`2.0.0` for every existing input **except** the provider/auth removal below,
+`0.0.2` for every existing input **except** the provider/auth removal below,
 which is breaking.
 
 ### Changed — BREAKING
@@ -384,19 +473,19 @@ which is breaking.
   `subscription_id` / `client_id` / `tenant_id` / `client_secret` to it)
   out of this module and into the root configuration that calls it. Nothing
   else needs to change — every other input/output is unchanged from
-  `2.0.0`.
+  `0.0.2`.
 - **`locals.tf` replaced by `all-locals.tf`.** All tunable defaults now live
   in a single `local.defaults` map (plus `local.defaults.environment_profile`
   for the per-environment sku/HA/clustering values previously spread across
   `main.tf`'s inline ternaries and the dead `dev_sku_name`/`qa_sku_name`/
-  `prod_sku_name` variables from `1.0.0`). See README "The 'one file for
+  `prod_sku_name` variables from `0.0.1`). See README "The 'one file for
   defaults' design."
 - **Every variable with a default now defaults to `null`** and resolves via
   `all-locals.tf`, rather than carrying a literal default in `variables.tf`.
-  Functionally equivalent to `2.0.0`'s literal defaults — this only changes
+  Functionally equivalent to `0.0.2`'s literal defaults — this only changes
   *where* the default value lives.
 - **`client_protocol` and `public_network_access` are no longer
-  independently tunable.** `2.0.0` allowed overriding them to `Plaintext` /
+  independently tunable.** `0.0.2` allowed overriding them to `Plaintext` /
   `Enabled`; validation now rejects both. See README "Network exposure and
   transit encryption are mandatory, not defaults." If you were relying on
   either override, this module is no longer the right fit for that use
@@ -428,7 +517,7 @@ which is breaking.
 - `locals.tf` and `validate.tf` (merged into `all-locals.tf` and
   `variables.tf` respectively).
 
-## [2.0.0] - 2026-08-22
+## [0.0.2] - 2026-08-22
 
 ### Added
 - Data persistence / backup support (`enable_backup`, `backup_method`,
@@ -471,7 +560,7 @@ which is breaking.
   that already existed but was previously unreachable (validation only
   allowed `dev`/`qa`/`prod`).
 - Split `providers.tf` into `versions.tf` (required_providers) and
-  `providers.tf` (provider block) — later removed entirely in `3.0.0`.
+  `providers.tf` (provider block) — later removed entirely in `0.0.3`.
 - `outputs.tf`: the previously-unnamed private DNS zone output is now named
   `private_dns_zone_ids` (plural, list) to also support the bring-your-own
   zone case.
@@ -495,10 +584,10 @@ which is breaking.
   supported on geo-replicated databases) that the previous version had no
   awareness of.
 
-## [1.0.0] - undated (initial working prototype)
+## [0.0.1] - undated (initial working prototype)
 
 Initial hardcoded proof-of-concept, captured from the working build referenced
-during the `2.0.0` refactor:
+during the `0.0.2` refactor:
 
 - Single environment's subnet/VNet/resource group names hardcoded in
   `locals.tf`.
@@ -511,4 +600,4 @@ during the `2.0.0` refactor:
 - `high_availability_enabled` typed as `string`.
 - `provider "azurerm" {}` configured inline in the module, authenticated via
   `usr-client-id` / `usr-client-secret` / `usr-tenant-id` /
-  `usr-subscription-id` variables (removed in `3.0.0`).
+  `usr-subscription-id` variables (removed in `0.0.3`).

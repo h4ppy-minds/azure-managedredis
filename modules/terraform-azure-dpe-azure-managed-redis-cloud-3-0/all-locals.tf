@@ -56,7 +56,7 @@ locals {
     }
 
     # NOTE: there is deliberately no per-environment node-type default here
-    # any more (v5.0.0). node-type is a REQUIRED variable — the caller
+    # any more (v0.2.0). node-type is a REQUIRED variable — the caller
     # (typically an onboarding template with its own sizing policy) always
     # supplies it explicitly. See the CHANGELOG for the migration this
     # implies if you're upgrading from an earlier version.
@@ -172,11 +172,20 @@ locals {
   persistence-mode-effective = local.create-geo-replication ? "DISABLED" : local.persistence-mode
 
   # --- Networking resolution ---
-  # Every instance gets a private endpoint — primary always, DR whenever
-  # create-dr is true. There is no toggle to opt out of either. Subnet
-  # info is therefore always required (enforced by the checks below and a
-  # matching lifecycle.precondition in main.tf/network.tf).
+  # Private endpoints (same pattern as the org's PostgreSQL servers):
+  #   primary instance -> one in its own region (always) + one in the
+  #                       paired region (whenever dr-location is set,
+  #                       for every topology)
+  #   DR instance      -> one in its own region (DR topologies only)
+  # Subnet info is required for each one that is created (enforced by
+  # lifecycle preconditions in main.tf/network.tf).
   subnet-id = coalesce(var.subnet-id, try(data.azurerm_subnet.subnet[0].id, null))
+
+  # The primary's paired-region endpoint. Keyed off the RAW input (not a
+  # data source) so the dr-subnet lookup below can depend on it without a
+  # cycle. DR topologies always set dr-location (precondition), so they
+  # always get it too.
+  create-paired-region-endpoint = var.dr-location != null
 
   dr-subnet-id = var.dr-subnet-id != null ? var.dr-subnet-id : try(data.azurerm_subnet.dr-subnet[0].id, null)
 
@@ -190,10 +199,14 @@ locals {
 
   valid-dr-location-for-dr = !local.create-dr || var.dr-location != null
 
-  # Whenever create-dr is true, DR must have a resolvable subnet — either
-  # a direct dr-subnet-id, or a complete name-based lookup trio.
+  # The paired region must be a different region from the primary's.
+  valid-paired-region = var.dr-location == null ? true : var.dr-location != var.location
+
+  # Whenever anything lands in the paired region (the DR instance, or the
+  # primary's paired-region endpoint), it needs a resolvable subnet there —
+  # either a direct dr-subnet-id, or a complete name-based lookup trio.
   valid-dr-subnet-inputs = (
-    !local.create-dr ||
+    !(local.create-dr || local.create-paired-region-endpoint) ||
     var.dr-subnet-id != null ||
     (var.dr-subnet-name != null && var.dr-vnet-name != null && var.dr-vnet-resource-group-name != null)
   )
