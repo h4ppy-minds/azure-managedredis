@@ -6,6 +6,7 @@
   "instance": {
     "name": "test-dr-ap-cache",
     "deployment_topology": "DR-ActivePassive",
+    "clustering_policy": "OSSCluster",
     "node_type": "Balanced_B0",
     "application_id": "platform-demo",
     "lob": "cc-0003",

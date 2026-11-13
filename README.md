@@ -5,7 +5,12 @@ JSON file per instance, one PR per request, no shared file to
 merge-conflict over — same pattern as the Valkey onboarding root, adapted
 to Azure.
 
-Template **0.4.0**, paired with redis module **v0.4.0**. 0.4.0 gives every
+Template **0.5.0**, paired with redis module **v0.5.0**. 0.5.0 adds the
+platform policy for HA and clustering per topology, the `high_availability`
+and `clustering_policy` request fields, and consumer client guidance in the
+intake schema. **Existing request files must state their current
+clustering policy before this is applied** — see "Upgrading existing
+caches to 0.5.0". 0.4.0 gives every
 instance a second private endpoint in the other region (see "Private
 endpoints in both regions"). 0.3.0 / module 0.3.0 moved environments into
 this template (see "Environments are owned by this template"). See both
@@ -120,11 +125,101 @@ per `deployment_topology`:
 
 | File | `deployment_topology` |
 |---|---|
-| `test-standalone-cache.json` | `STANDALONE` |
-| `test-ha-cache.json` | `HA` |
-| `test-dr-active-passive-cache.json` | `DR-ActivePassive` |
+| `test-standalone-cache.json` | `STANDALONE`, legacy pin `clustering_policy: NoCluster` (deployed before 0.5.0) |
+| `test-standalone-ha-cache.json` | `STANDALONE` + `high_availability: true` + RDB persistence |
+| `test-ha-cache.json` | `HA`, pin `clustering_policy: OSSCluster` (deployed before 0.5.0) |
+| `test-dr-active-passive-cache.json` | `DR-ActivePassive` + `clustering_policy: OSSCluster` |
 | `test-dr-active-active-cache.json` | `DR-ActiveActive` |
 | `test-ha-modules-cache.json` | `HA` + all four Redis modules (see below) |
+
+## High availability, DR and clustering policy
+
+| `deployment_topology` | `high_availability` | `clustering_policy` (first = default) | DR | Geo-replication |
+|---|---|---|---|---|
+| `STANDALONE` | optional, default `false` | `EnterpriseCluster` | no | no |
+| `HA` | always on (omit) | `EnterpriseCluster`, `OSSCluster` | no | no |
+| `DR-ActivePassive` | always on (omit) | `EnterpriseCluster`, `OSSCluster` | yes | no |
+| `DR-ActiveActive` | always on (omit) | `EnterpriseCluster`, `OSSCluster` | yes | yes |
+
+- Fallback order for `clustering_policy`: request → `default.json`
+  (`EnterpriseCluster`) → module topology default (`EnterpriseCluster`).
+  RediSearch requests get `EnterpriseCluster` automatically.
+- **HA off** = one node, about half the price, no SLA, no zone redundancy,
+  no persistence, data lost on node failure or patching (dev/test).
+  **HA on** = two nodes with primary + replica shards and automatic
+  failover. `STANDALONE` + `high_availability: true` is allowed and may
+  use persistence.
+- **`EnterpriseCluster`**: any standard client, no code changes.
+  **`OSSCluster`**: cluster-aware client, hash-slot rules for multi-key
+  commands, ports 10000 + 8500–8599, per-shard DNS records — only for
+  HA/DR. The exact changes per language are in the intake schema's
+  `x-client-guidance` block, for the UI to show next to the choice.
+- **Promotion** (`STANDALONE` in dev → `HA` in preprod/prod) is a new
+  request in the higher environment. With `EnterpriseCluster` on both it
+  needs no code change; only the hostname and key differ.
+- Violations fail the plan in the module; these checks name the request:
+  `standalone-is-enterprise-cluster-only`, `ha-only-optional-for-standalone`,
+  `persistence-requires-ha`, `legacy-nocluster-only-standalone-25gb`,
+  `redisearch-requires-enterprise-cluster`.
+- **`clustering_policy` and `high_availability` are create-time only.**
+  Changing `clustering_policy` on an existing cache fails the plan (the
+  provider would otherwise wipe it); changing `high_availability`
+  replaces the cache. Switching means a new request plus a data migration.
+
+### Upgrading existing caches to 0.5.0
+
+Before 0.5.0 the clustering policy came implicitly from the topology
+(`STANDALONE` → `NoCluster`, `HA`/`DR-*` → `OSSCluster`), so existing
+request files don't have `clustering_policy`. Under 0.5.0 they would
+resolve to `EnterpriseCluster`; the redis module's guard then fails their
+plan, which blocks the whole environment's workspace. **Before applying
+0.5.0**, add the line below to each existing request's `instance` block.
+It only states what the cache already has — nothing changes in Azure.
+
+| Consumer | Environments | Topology | SKU | Add |
+|---|---|---|---|---|
+| Axios | dev, qa | HA | B1 | `"clustering_policy": "OSSCluster"` |
+| IDAM authz | dev, qa | HA | B5 | `"clustering_policy": "OSSCluster"` |
+| CodeReviewAgent | dev, prod | HA | B10 | `"clustering_policy": "OSSCluster"` |
+| CWX AXP | qa, prod | HA | B3 | `"clustering_policy": "OSSCluster"` |
+| NBA | dev | HA | B20 | `"clustering_policy": "OSSCluster"` |
+| NBA | preprod | HA | B150 | `"clustering_policy": "OSSCluster"` |
+| RedisML | dev | STANDALONE | B1 | `"clustering_policy": "NoCluster"` |
+| CryptoAPI | qa | STANDALONE | B1 | `"clustering_policy": "NoCluster"` |
+| Retail semantic | qa | STANDALONE | B10 | `"clustering_policy": "NoCluster"` |
+| MacSpider | preprod, prod | STANDALONE | B0 | `"clustering_policy": "NoCluster"` |
+| `test-ha-cache` (fixture) | dev | HA | B0 | already added |
+| `test-standalone-cache` (fixture) | dev | STANDALONE | B0 | already added |
+
+Then, per environment:
+
+1. Run `terraform plan` for the environment.
+2. Every existing cache must show **no changes**, and the plan **0 to
+   destroy**. A "Clustering policy change blocked for <name>" error means
+   that request is still missing its line.
+3. Apply.
+
+Never remove or filter out an existing request file to skip it:
+Terraform then plans to **destroy** that cache.
+
+`NoCluster` is legacy only: accepted when stated explicitly, only for
+`STANDALONE` and SKUs of 25 GB or less, never offered in the intake.
+
+**Follow-ups to raise with consumers (not part of this upgrade):**
+
+- **NBA preprod** (HA, OSS, B150) has standalone-style client code. A
+  plain client on an OSS cache fails for keys on other shards (`MOVED`).
+  Recommended: a new HA + `EnterpriseCluster` cache (new request, ideally
+  a new name), migrate, then delete the old request. Check NBA dev too.
+- **MacSpider prod** is a single-node B0 cache in production (no replica,
+  no SLA). Recommended: a new HA + `EnterpriseCluster` cache, migrate,
+  retire the old one.
+- **RedisML, CryptoAPI, Retail semantic, MacSpider** will land on
+  `EnterpriseCluster` when they promote. Their connection code stays the
+  same; multi-key commands other than DEL/MSET/MGET/EXISTS/UNLINK/TOUCH,
+  `MULTI`/`EXEC` and multi-key Lua need their keys in one hash slot. Ask
+  Retail semantic and RedisML whether they need vector search
+  (RediSearch): it has to be chosen when the cache is created.
 
 ## Redis modules
 

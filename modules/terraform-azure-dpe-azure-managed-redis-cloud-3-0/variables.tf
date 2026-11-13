@@ -40,20 +40,28 @@ variable "tags" {
 # --- OPTIONAL ---
 variable "deployment-topology" {
   description = <<-EOT
-    The single knob for topology. Default (when left null): see
+    Topology: decides HA, which clustering policies are allowed, DR and
+    geo-replication. Default (when left null): see
     local.defaults.deployment-topology in all-locals.tf.
-      STANDALONE: single instance, no HA, no DR. high_availability_enabled
-        = false, clustering_policy = NoCluster.
-      HA: single-region instance with HA/zone redundancy enabled, no DR.
-        high_availability_enabled = true, clustering_policy = OSSCluster.
+      STANDALONE: single region, no DR. HA OFF by default (one node, no
+        replica: cheapest, no SLA, no zone redundancy, no persistence,
+        data lost on node failure/maintenance) but optional — set
+        high-availability-enabled = true for two nodes. Clustering:
+        EnterpriseCluster only.
+      HA: single region, no DR, HA always on (two nodes, primary +
+        replica shards, zone redundant where the region has zones).
+        Clustering: EnterpriseCluster (default) or OSSCluster.
       DR-ActivePassive: adds a DR instance in dr-location. Azure Managed
         Redis has no native "passive replica" concept, so this DR instance
         is a standalone standby you keep in sync yourself (RDB/AOF export-
         import, or a secondary write path). See README "Known
-        limitations."
+        limitations." HA always on for both instances; clustering
+        EnterpriseCluster (default) or OSSCluster.
       DR-ActiveActive: adds a DR instance in dr-location, linked to the
         primary via azurerm_managed_redis_geo_replication — live,
-        bidirectional replication. Azure does not support persistence on a
+        bidirectional replication. HA always on (Azure requires it on
+        every geo-replicated instance); clustering EnterpriseCluster
+        (default) or OSSCluster, identical on both instances. Azure does not support persistence on a
         geo-replicated database, so persistence-mode is silently forced to
         DISABLED in this mode. Requires a geo-replication-capable
         node-type (Balanced_B10+ or equivalent) — see
@@ -243,7 +251,7 @@ variable "node-type" {
 
 # --- OPTIONAL ---
 variable "high-availability-enabled" {
-  description = "Optional override for zone/HA redundancy. Default (when left null): the deployment-topology-driven value in local.defaults.topology-profile — false for STANDALONE, true for HA/DR-ActivePassive/DR-ActiveActive."
+  description = "High availability (replication: 2+ nodes with primary + replica shards, automatic failover, zone redundancy where available) instead of 1 node. Default (when left null): the topology's value — false for STANDALONE, true for HA/DR-ActivePassive/DR-ActiveActive. Only STANDALONE may change it (set true for a single-region cache with replication, the SLA and persistence, without moving to the HA topology). Setting false for any other topology fails the plan. Changing it on an existing instance REPLACES the instance (high_availability_enabled is ForceNew in azurerm, even though Azure itself can enable HA in place)."
   type        = bool
   default     = null
   nullable    = true
@@ -251,14 +259,46 @@ variable "high-availability-enabled" {
 
 # --- OPTIONAL ---
 variable "clustering-policy" {
-  description = "Optional override for default_database clustering_policy. Default (when left null): the deployment-topology-driven value in local.defaults.topology-profile — NoCluster for STANDALONE, OSSCluster for HA/DR-ActivePassive/DR-ActiveActive. Forced to EnterpriseCluster whenever redis-modules includes RediSearch (Azure requirement), regardless of this value — see the redisearch-forces-cluster-and-eviction-policy check."
+  description = <<-EOT
+    How clients reach the cache's shards (default_database
+    clustering_policy). Default (when left null): the topology's default,
+    EnterpriseCluster for every topology. Allowed per topology (platform
+    policy, local.defaults.topology-profile):
+      STANDALONE: EnterpriseCluster only.
+      HA / DR-ActivePassive / DR-ActiveActive: EnterpriseCluster or
+        OSSCluster.
+    Values:
+      EnterpriseCluster: one endpoint; an Azure proxy routes to shards.
+        Any standard Redis client, no code changes. Small extra latency;
+        multi-key commands across hash slots limited to DEL, MSET, MGET,
+        EXISTS, UNLINK, TOUCH.
+      OSSCluster: Redis Cluster API; clients connect to each shard
+        directly. Best throughput/latency. Needs a cluster-aware client
+        and keys of one multi-key command in the same hash slot.
+      NoCluster (LEGACY ONLY): no sharding, like classic single-node
+        Redis. Never a default and not offered to new requests. Accepted
+        only when passed explicitly, only with deployment-topology =
+        STANDALONE and only on SKUs of 25 GB or less (Balanced_B0..B20,
+        ComputeOptimized_X3..X20, MemoryOptimized_M10..M20) — to keep
+        STANDALONE caches created before v0.5.0 (which got NoCluster
+        implicitly) unchanged.
+    Forced to EnterpriseCluster whenever redis-modules includes
+    RediSearch (Azure requirement) — see the
+    redisearch-forces-cluster-and-eviction-policy check.
+    CREATE-TIME ONLY in practice: the azurerm provider applies a change
+    by deleting and re-creating the database (all data lost) while the
+    plan shows only "update in-place". This module therefore ignores
+    changes to it on an existing instance and FAILS THE PLAN if the
+    requested value differs from the instance's actual one. See README
+    "Changing the clustering policy of an existing cache".
+  EOT
   type        = string
   default     = null
   nullable    = true
 
   validation {
-    condition     = var.clustering-policy == null ? true : contains(["NoCluster", "OSSCluster", "EnterpriseCluster"], var.clustering-policy)
-    error_message = "clustering-policy must be 'NoCluster', 'OSSCluster' or 'EnterpriseCluster'."
+    condition     = var.clustering-policy == null ? true : contains(["EnterpriseCluster", "OSSCluster", "NoCluster"], var.clustering-policy)
+    error_message = "clustering-policy must be 'EnterpriseCluster' or 'OSSCluster' ('NoCluster' only as a legacy pin for pre-v0.5.0 STANDALONE caches)."
   }
 }
 
@@ -445,7 +485,7 @@ variable "public-network-access" {
 
 # --- OPTIONAL ---
 variable "persistence-mode" {
-  description = "Data persistence strategy. RDB = periodic point-in-time snapshots. AOF = append-only log of every write. DISABLED = no persistence. Default (see all-locals.tf): DISABLED. Forced to DISABLED whenever deployment-topology = DR-ActiveActive, regardless of this value."
+  description = "Data persistence strategy. RDB = periodic point-in-time snapshots. AOF = append-only log of every write. DISABLED = no persistence. Default (see all-locals.tf): DISABLED. Forced to DISABLED whenever deployment-topology = DR-ActiveActive, regardless of this value. RDB/AOF require high availability (Azure): plan fails for STANDALONE with RDB/AOF unless high-availability-enabled = true."
   type        = string
   default     = null
   nullable    = true

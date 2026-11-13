@@ -4,7 +4,12 @@
   "title": "Azure Managed Redis Onboarding Request",
   "description": "Schema for one onboarding request file consumed by the Terraform root under config/onboarding-files-redis/*.json. This is the exact shape the UI/wrapper API must produce — every field name, nesting level, and allowed value here is read verbatim by locals.tf. Fields not listed here are ignored by Terraform even if present. This file is a reference for the UI team, not itself read by Terraform.",
   "type": "object",
-  "required": ["request_type", "environment", "requested_by", "instance"],
+  "required": [
+    "request_type",
+    "environment",
+    "requested_by",
+    "instance"
+  ],
   "properties": {
     "type": {
       "type": "string",
@@ -13,141 +18,585 @@
     },
     "request_type": {
       "type": "string",
-      "enum": ["create", "delete"],
+      "enum": [
+        "create",
+        "delete"
+      ],
       "description": "\"create\" covers BOTH creating a new instance and updating an existing one — there is no separate \"update\" value. To change an existing instance, resubmit the same file with the same instance.name and the changed field(s). \"delete\" removes the instance from the next Terraform apply; the instance object can be left in place as a historical record."
     },
     "environment": {
       "type": "string",
-      "enum": ["dev", "qa", "uat", "prod"],
+      "enum": [
+        "dev",
+        "qa",
+        "uat",
+        "preprod",
+        "prod"
+      ],
       "description": "Which environment this request applies to. Must match one of default.json's environments.<env> keys exactly. Determines subscription_id, resource group, default location, and VNet/subnet — and also becomes this instance's `environment` Azure tag automatically (the UI does not need a separate field for that tag)."
     },
     "requested_by": {
       "type": "string",
       "description": "Free-text requester identity (e.g. team name, username). Not validated or used by Terraform beyond being stored in the request file; purely a paper trail.",
-      "examples": ["platform-team", "jane.doe@example.com"]
+      "examples": [
+        "platform-team",
+        "jane.doe@example.com"
+      ]
     },
     "instance": {
       "$ref": "#/$defs/instance"
     }
   },
-
   "$defs": {
     "instance": {
       "type": "object",
-      "required": ["name"],
+      "required": [
+        "name"
+      ],
+      "allOf": [
+        {
+          "$comment": "DR-ActiveActive (active geo-replication) supports only RediSearch and RedisJSON.",
+          "if": {
+            "properties": {
+              "deployment_topology": {
+                "const": "DR-ActiveActive"
+              }
+            },
+            "required": [
+              "deployment_topology"
+            ]
+          },
+          "then": {
+            "properties": {
+              "redis_modules": {
+                "items": {
+                  "enum": [
+                    "RediSearch",
+                    "RedisJSON",
+                    "Search",
+                    "JSON"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "$comment": "FlashOptimized_* node types support only RedisJSON.",
+          "if": {
+            "properties": {
+              "node_type": {
+                "pattern": "^FlashOptimized_"
+              }
+            },
+            "required": [
+              "node_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "redis_modules": {
+                "items": {
+                  "enum": [
+                    "RedisJSON",
+                    "JSON"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "$comment": "Legacy NoCluster: only on node_type of 25 GB or less (Azure).",
+          "if": {
+            "properties": {
+              "clustering_policy": {
+                "const": "NoCluster"
+              }
+            },
+            "required": [
+              "clustering_policy"
+            ]
+          },
+          "then": {
+            "properties": {
+              "deployment_topology": {
+                "const": "STANDALONE"
+              },
+              "node_type": {
+                "enum": [
+                  "Balanced_B0",
+                  "Balanced_B1",
+                  "Balanced_B3",
+                  "Balanced_B5",
+                  "Balanced_B10",
+                  "Balanced_B20",
+                  "ComputeOptimized_X3",
+                  "ComputeOptimized_X5",
+                  "ComputeOptimized_X10",
+                  "ComputeOptimized_X20",
+                  "MemoryOptimized_M10",
+                  "MemoryOptimized_M20"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "EnterpriseFlash_* node types support only RediSearch and RedisJSON.",
+          "if": {
+            "properties": {
+              "node_type": {
+                "pattern": "^EnterpriseFlash_"
+              }
+            },
+            "required": [
+              "node_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "redis_modules": {
+                "items": {
+                  "enum": [
+                    "RediSearch",
+                    "RedisJSON",
+                    "Search",
+                    "JSON"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "$comment": "Platform policy: STANDALONE is EnterpriseCluster (NoCluster only as a legacy pin on pre-0.5.0 caches).",
+          "if": {
+            "properties": {
+              "deployment_topology": {
+                "const": "STANDALONE"
+              }
+            },
+            "required": [
+              "deployment_topology"
+            ]
+          },
+          "then": {
+            "properties": {
+              "clustering_policy": {
+                "enum": [
+                  "EnterpriseCluster",
+                  "NoCluster"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "Platform policy: HA can only be turned off for STANDALONE; HA / DR-* always run with high availability.",
+          "if": {
+            "properties": {
+              "deployment_topology": {
+                "enum": [
+                  "HA",
+                  "DR-ActivePassive",
+                  "DR-ActiveActive"
+                ]
+              }
+            },
+            "required": [
+              "deployment_topology"
+            ]
+          },
+          "then": {
+            "properties": {
+              "high_availability": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "$comment": "RediSearch requires clustering_policy = EnterpriseCluster.",
+          "if": {
+            "properties": {
+              "redis_modules": {
+                "contains": {
+                  "enum": [
+                    "RediSearch",
+                    "Search"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "redis_modules"
+            ]
+          },
+          "then": {
+            "properties": {
+              "clustering_policy": {
+                "const": "EnterpriseCluster"
+              }
+            }
+          }
+        },
+        {
+          "$comment": "Persistence requires high availability, so STANDALONE without high_availability = true can't use RDB/AOF.",
+          "if": {
+            "properties": {
+              "deployment_topology": {
+                "const": "STANDALONE"
+              }
+            },
+            "required": [
+              "deployment_topology"
+            ],
+            "not": {
+              "properties": {
+                "high_availability": {
+                  "const": true
+                }
+              },
+              "required": [
+                "high_availability"
+              ]
+            }
+          },
+          "then": {
+            "properties": {
+              "persistence": {
+                "properties": {
+                  "mode": {
+                    "const": "DISABLED"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "$comment": "RediSearch requires eviction_policy = NoEviction.",
+          "if": {
+            "properties": {
+              "redis_modules": {
+                "contains": {
+                  "enum": [
+                    "RediSearch",
+                    "Search"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "redis_modules"
+            ]
+          },
+          "then": {
+            "properties": {
+              "eviction_policy": {
+                "const": "NoEviction"
+              }
+            }
+          }
+        }
+      ],
       "properties": {
-
         "name": {
           "type": "string",
-          "pattern": "^[a-z][a-z0-9-]{0,55}[a-z0-9]$",
-          "description": "Base name for the instance. Terraform appends \"-<environment>\" automatically to build the real Azure resource name (e.g. \"my-cache\" + dev -> \"my-cache-dev\") — do NOT include the environment in this field. MUST be unique across every request file targeting the same environment; two files with the same name silently collide and only one instance gets created (this template's request_names_unique_per_environment check catches this at plan time). Keep it short.",
-          "examples": ["my-cache", "checkout-session-cache"]
+          "pattern": "^[a-z][a-z0-9-]{0,47}[a-z0-9]$",
+          "description": "Base name for the instance. The onboarding template appends \"-<environment>\" automatically to build the real Azure resource name (e.g. \"my-cache\" + dev -> \"my-cache-dev\") — do NOT include the environment in this field. At most 49 characters, so <name>-preprod-dr stays within Azure's 60-character limit. MUST be unique across every request file targeting the same environment; two files with the same name silently collide and only one instance gets created (this template's request_names_unique_per_environment check catches this at plan time). Keep it short.",
+          "examples": [
+            "my-cache",
+            "checkout-session-cache"
+          ]
         },
-
         "location": {
           "type": "string",
           "description": "Azure region for the PRIMARY instance, e.g. \"eastus2\". Optional — omit to use the environment's default location (default.json.environments.<env>.location). Any Azure region is accepted as-is (this template maintains no allow-list). Only matters for DR: cross-region replication is currently only supported between the specific pairs listed in default.json.dr_region_pairs (see deployment_topology below) — requesting DR-ActivePassive/DR-ActiveActive from a primary location outside a supported pair fails plan-time validation.",
           "default": "<environment's default location from default.json>",
-          "examples": ["eastus2", "centralus"]
+          "examples": [
+            "eastus2",
+            "centralus"
+          ]
         },
-
         "deployment_topology": {
           "type": "string",
-          "enum": ["STANDALONE", "HA", "DR-ActivePassive", "DR-ActiveActive"],
+          "enum": [
+            "STANDALONE",
+            "HA",
+            "DR-ActivePassive",
+            "DR-ActiveActive"
+          ],
           "default": "STANDALONE",
-          "description": "The single topology knob — there is no separate replica_count or cross_region_replica field the way some other onboarding flows split this into. STANDALONE: no HA, no DR. HA: HA/zone redundancy enabled, single region. DR-ActivePassive: adds a standalone standby DR instance in the paired region (kept in sync out-of-band — see the redis module's README). DR-ActiveActive: adds a DR instance live-linked via geo-replication; persistence is automatically disabled in this mode regardless of the persistence block below."
+          "description": "Platform policy per topology. STANDALONE: single region, no DR, no geo-replication; high availability OPTIONAL (default off = one node, no replica, about half the price, no SLA, no zone redundancy, no persistence, data lost if the node fails or is patched; dev/test) — set high_availability = true for two nodes; clustering_policy is always EnterpriseCluster. HA: single region, no DR; high availability always on (two nodes with primary + replica shards, automatic failover, zone redundant where the region has zones); clustering_policy EnterpriseCluster (default) or OSSCluster. DR-ActivePassive: as HA, plus a second HA cache in the paired region that is NOT linked — you keep it in sync yourself (see the redis module's README); clustering_policy EnterpriseCluster (default) or OSSCluster. DR-ActiveActive: as HA, plus a second HA cache in the paired region live-linked by active geo-replication (both read/write); clustering_policy EnterpriseCluster (default) or OSSCluster; persistence is automatically disabled. Changing high availability on an existing cache (STANDALONE without HA <-> anything with HA) REPLACES it (all data lost); moving a STANDALONE cache that already has high_availability = true to HA with the same clustering_policy changes nothing.",
+          "x-ui-label": "High availability / DR"
         },
-
+        "high_availability": {
+          "type": "boolean",
+          "default": false,
+          "description": "Only for deployment_topology = STANDALONE: true = two nodes with a replica (automatic failover, SLA, zone redundancy, persistence allowed) at the two-node price; false/omitted = one node. HA and DR-* always have high availability — omit this field for them (false is rejected). Changing it on an existing cache REPLACES the cache (all data lost).",
+          "x-ui-label": "High availability (STANDALONE only)",
+          "x-ui-show-when": {
+            "deployment_topology": "STANDALONE"
+          }
+        },
+        "clustering_policy": {
+          "type": "string",
+          "default": "EnterpriseCluster",
+          "oneOf": [
+            {
+              "const": "EnterpriseCluster",
+              "title": "Enterprise (default) — no code changes",
+              "description": "One endpoint (<cache>.<region>.redis.azure.net:10000, TLS); an Azure proxy routes each command to the right shard. Works with any standard Redis client exactly like a single Redis server. Multi-key commands across keys work for DEL, MSET, MGET, EXISTS, UNLINK and TOUCH; other multi-key commands, MULTI/EXEC and Lua scripts that touch several keys need those keys in the same hash slot (use {hash-tags}). Small extra latency from the proxy hop. Required for RediSearch. Allowed for every topology; the only option for STANDALONE."
+            },
+            {
+              "const": "OSSCluster",
+              "title": "OSS Cluster — highest performance, needs a cluster-aware client",
+              "description": "Redis Cluster API: the client discovers the shards (CLUSTER NODES) and connects to each directly — no proxy hop, best throughput and latency. Requires application changes: a cluster-aware client, all keys of one multi-key command / transaction / Lua script in the same hash slot, and network access to ports 8500-8599 as well as 10000. Not available for STANDALONE or with RediSearch. See x-client-guidance at the top of this schema for the exact changes."
+            },
+            {
+              "const": "NoCluster",
+              "title": "Non-clustered (LEGACY — do not offer)",
+              "description": "Only for STANDALONE caches created before template 0.5.0, which got NoCluster implicitly. The platform team adds it by hand to those existing request files so they stay unchanged. Never offer it in the UI; new requests can't use it (STANDALONE is EnterpriseCluster). Only on node_type of 25 GB or less.",
+              "deprecated": true,
+              "x-legacy-only": true
+            }
+          ],
+          "description": "How applications connect to the cache's shards. STANDALONE: EnterpriseCluster (NoCluster appears only as a legacy pin on caches created before 0.5.0 — never offer it). HA / DR-ActivePassive / DR-ActiveActive: EnterpriseCluster (default) or OSSCluster. Omit to get EnterpriseCluster (also set automatically when redis_modules includes RediSearch). CREATE-TIME ONLY: changing it on an existing cache fails the Terraform plan (the provider would otherwise delete all data); switching policy means a new cache plus a data migration. See x-client-guidance for what an application has to change for each choice.",
+          "x-ui-label": "Clustering policy",
+          "x-ui-show-when": {
+            "deployment_topology": [
+              "HA",
+              "DR-ActivePassive",
+              "DR-ActiveActive"
+            ]
+          },
+          "x-ui-options": [
+            "EnterpriseCluster",
+            "OSSCluster"
+          ]
+        },
         "node_type": {
           "type": "string",
           "enum": [
-            "Enterprise_E1", "Enterprise_E5", "Enterprise_E10", "Enterprise_E20",
-            "Enterprise_E50", "Enterprise_E100", "Enterprise_E200", "Enterprise_E400",
-            "EnterpriseFlash_F300", "EnterpriseFlash_F700", "EnterpriseFlash_F1500",
-            "Balanced_B0", "Balanced_B1", "Balanced_B3", "Balanced_B5", "Balanced_B10",
-            "Balanced_B20", "Balanced_B50", "Balanced_B100", "Balanced_B150",
-            "Balanced_B250", "Balanced_B350", "Balanced_B500", "Balanced_B700", "Balanced_B1000",
-            "MemoryOptimized_M10", "MemoryOptimized_M20", "MemoryOptimized_M50",
-            "MemoryOptimized_M100", "MemoryOptimized_M150", "MemoryOptimized_M250",
-            "MemoryOptimized_M350", "MemoryOptimized_M500", "MemoryOptimized_M700",
-            "MemoryOptimized_M1000", "MemoryOptimized_M1500", "MemoryOptimized_M2000",
-            "ComputeOptimized_X3", "ComputeOptimized_X5", "ComputeOptimized_X10",
-            "ComputeOptimized_X20", "ComputeOptimized_X50", "ComputeOptimized_X100",
-            "ComputeOptimized_X150", "ComputeOptimized_X250", "ComputeOptimized_X350",
-            "ComputeOptimized_X500", "ComputeOptimized_X700",
-            "FlashOptimized_A250", "FlashOptimized_A500", "FlashOptimized_A700",
-            "FlashOptimized_A1000", "FlashOptimized_A1500", "FlashOptimized_A2000", "FlashOptimized_A4500"
+            "Enterprise_E1",
+            "Enterprise_E5",
+            "Enterprise_E10",
+            "Enterprise_E20",
+            "Enterprise_E50",
+            "Enterprise_E100",
+            "Enterprise_E200",
+            "Enterprise_E400",
+            "EnterpriseFlash_F300",
+            "EnterpriseFlash_F700",
+            "EnterpriseFlash_F1500",
+            "Balanced_B0",
+            "Balanced_B1",
+            "Balanced_B3",
+            "Balanced_B5",
+            "Balanced_B10",
+            "Balanced_B20",
+            "Balanced_B50",
+            "Balanced_B100",
+            "Balanced_B150",
+            "Balanced_B250",
+            "Balanced_B350",
+            "Balanced_B500",
+            "Balanced_B700",
+            "Balanced_B1000",
+            "MemoryOptimized_M10",
+            "MemoryOptimized_M20",
+            "MemoryOptimized_M50",
+            "MemoryOptimized_M100",
+            "MemoryOptimized_M150",
+            "MemoryOptimized_M250",
+            "MemoryOptimized_M350",
+            "MemoryOptimized_M500",
+            "MemoryOptimized_M700",
+            "MemoryOptimized_M1000",
+            "MemoryOptimized_M1500",
+            "MemoryOptimized_M2000",
+            "ComputeOptimized_X3",
+            "ComputeOptimized_X5",
+            "ComputeOptimized_X10",
+            "ComputeOptimized_X20",
+            "ComputeOptimized_X50",
+            "ComputeOptimized_X100",
+            "ComputeOptimized_X150",
+            "ComputeOptimized_X250",
+            "ComputeOptimized_X350",
+            "ComputeOptimized_X500",
+            "ComputeOptimized_X700",
+            "FlashOptimized_A250",
+            "FlashOptimized_A500",
+            "FlashOptimized_A700",
+            "FlashOptimized_A1000",
+            "FlashOptimized_A1500",
+            "FlashOptimized_A2000",
+            "FlashOptimized_A4500"
           ],
           "description": "Azure Managed Redis SKU. Please select one of the Balanced_Bxx options unless advised by engineering or Redis support. Changing this on an existing instance forces replacement (Azure API behavior).",
           "x-notes": "No fixed default here — the UI should require an explicit choice, or default.json.node_type (\"Balanced_B0\") is used if omitted."
         },
-
         "authorization_mode": {
           "type": "string",
-          "enum": ["AccessKey", "MicrosoftEntraID"],
+          "enum": [
+            "AccessKey",
+            "MicrosoftEntraID"
+          ],
           "default": "AccessKey",
           "description": "Client authentication mode. AccessKey is fully self-service — works end to end through this onboarding flow. MicrosoftEntraID disables access-key auth, but requires the platform team to grant specific principals data-plane access OUT OF BAND (Azure Portal/CLI) after this request applies — no Terraform automation exists for that grant yet. Do not let a UI submit MicrosoftEntraID without surfacing that manual follow-up step to the requester."
         },
-
         "persistence": {
           "type": "object",
-          "description": "All sub-fields are optional and merged individually against default.json's persistence block — you can set just `mode` and still inherit the matching rdb/aof frequency default. Automatically forced to DISABLED (regardless of what's requested here) whenever deployment_topology = DR-ActiveActive.",
+          "description": "All sub-fields are optional and merged individually against default.json's persistence block — you can set just `mode` and still inherit the matching rdb/aof frequency default. Automatically forced to DISABLED (regardless of what's requested here) whenever deployment_topology = DR-ActiveActive. Requires high availability: STANDALONE requests must leave mode = DISABLED (Azure only persists HA caches).",
           "properties": {
             "mode": {
               "type": "string",
-              "enum": ["RDB", "AOF", "DISABLED"],
+              "enum": [
+                "RDB",
+                "AOF",
+                "DISABLED"
+              ],
               "default": "DISABLED"
             },
             "rdb_frequency": {
               "type": "string",
-              "enum": ["1h", "6h", "12h"],
+              "enum": [
+                "1h",
+                "6h",
+                "12h"
+              ],
               "default": "12h",
               "description": "Only meaningful when mode = RDB."
             },
             "aof_frequency": {
               "type": "string",
-              "enum": ["always", "1s"],
+              "enum": [
+                "always",
+                "1s"
+              ],
               "default": "1s",
               "description": "Only meaningful when mode = AOF."
             }
           }
         },
-
         "eviction_policy": {
           "type": "string",
-          "enum": ["AllKeysLRU", "AllKeysLFU", "AllKeysRandom", "VolatileLRU", "VolatileLFU", "VolatileRandom", "VolatileTTL", "NoEviction"],
-          "default": "AllKeysLRU"
+          "enum": [
+            "AllKeysLRU",
+            "AllKeysLFU",
+            "AllKeysRandom",
+            "VolatileLRU",
+            "VolatileLFU",
+            "VolatileRandom",
+            "VolatileTTL",
+            "NoEviction"
+          ],
+          "default": "AllKeysLRU",
+          "description": "Defaults to AllKeysLRU — EXCEPT when redis_modules includes RediSearch, where it defaults to (and must be) NoEviction. Azure requires NoEviction for RediSearch; this schema rejects any other value in that case, and Terraform forces NoEviction regardless."
         },
-
+        "redis_modules": {
+          "type": "array",
+          "description": "Redis modules to enable. Optional — omit (or send []) for none. Canonical names or short aliases are accepted, and Terraform additionally accepts any letter case: RediSearch|Search, RedisJSON|JSON, RedisBloom|Bloom, RedisTimeSeries|TimeSeries. MODULES ARE CREATE-TIME ONLY: adding, removing or changing a module on an existing instance DESTROYS AND RECREATES it (all data lost), and is blocked while deletion_protection_enabled = true. Rules (also enforced by Terraform): no duplicates (an alias and its canonical name are the same module); DR-ActiveActive allows only RediSearch and RedisJSON; FlashOptimized_* node types allow only RedisJSON, EnterpriseFlash_* only RediSearch and RedisJSON; RediSearch forces eviction_policy = NoEviction and clustering_policy = EnterpriseCluster.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "RediSearch",
+              "RedisJSON",
+              "RedisBloom",
+              "RedisTimeSeries",
+              "Search",
+              "JSON",
+              "Bloom",
+              "TimeSeries"
+            ]
+          },
+          "uniqueItems": true,
+          "maxItems": 4,
+          "default": [],
+          "examples": [
+            [
+              "RediSearch",
+              "RedisJSON"
+            ],
+            [
+              "RediSearch",
+              "RedisJSON",
+              "Bloom",
+              "TimeSeries"
+            ]
+          ],
+          "x-notes": "uniqueItems cannot catch an alias duplicate such as [\"Bloom\", \"RedisBloom\"] — the wrapper should normalise aliases to canonical names before submitting, or rely on Terraform's validation, which does catch it."
+        },
+        "redis_module_args": {
+          "type": "object",
+          "description": "Optional per-module configuration arguments, keyed by module name (same names/aliases as redis_modules). Every key must also appear in redis_modules. This is the only way to configure a module on Azure Managed Redis (FT.CONFIG is not supported). Create-time only — changing it recreates the instance.",
+          "propertyNames": {
+            "enum": [
+              "RediSearch",
+              "RedisJSON",
+              "RedisBloom",
+              "RedisTimeSeries",
+              "Search",
+              "JSON",
+              "Bloom",
+              "TimeSeries"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": {},
+          "examples": [
+            {
+              "RedisBloom": "ERROR_RATE 0.01 INITIAL_SIZE 400"
+            }
+          ]
+        },
         "deletion_protection_enabled": {
           "type": "boolean",
           "default": true,
           "description": "When true, an Azure resource lock (CanNotDelete) is created on the instance — deletion is blocked at the Azure Portal/CLI/API level, not just a Terraform-side guard. Must be explicitly set back to false in a prior apply before a delete request can succeed. Also blocks any change that forces resource replacement (e.g. node_type) until temporarily disabled."
         },
-
         "geo_replication_group_name": {
           "type": "string",
           "description": "Optional name override for the geo-replication group. Only relevant when deployment_topology = DR-ActiveActive; ignored otherwise. Leave unset to let Azure generate one.",
           "x-notes": "Present in the schema for completeness; most requests should omit this."
         },
-
         "application_id": {
           "type": "string",
           "description": "Instance-level field (NOT nested under `tags`). Always becomes the `application_id` Azure tag. Optional — falls back to default.json's `default_application_id` if omitted.",
-          "examples": ["platform-demo", "checkout-service"]
+          "examples": [
+            "platform-demo",
+            "checkout-service"
+          ]
         },
         "lob": {
           "type": "string",
           "description": "Instance-level field (NOT nested under `tags`). Always becomes the `lob` (line of business / cost center) Azure tag if provided. No default — omitted entirely from tags if not set.",
-          "examples": ["cc-0001"]
+          "examples": [
+            "cc-0001"
+          ]
         },
         "tags": {
           "type": "object",
-          "additionalProperties": { "type": "string" },
+          "additionalProperties": {
+            "type": "string"
+          },
           "description": "OPTIONAL free-form extra tags, entirely at the requester's discretion — anything set here is appended to the instance's Azure tags alongside application_id/lob. Most requests can omit this entirely. Do NOT put `topology`, `environment`, or `managed_by` in here — those three keys are always overwritten by Terraform-derived values regardless of what's sent, so a UI should either omit them as options or grey them out.",
-          "examples": [{ "criticality": "high" }, { "pod": "team-alpha", "cost-optimization": "enabled" }]
+          "examples": [
+            {
+              "criticality": "high"
+            },
+            {
+              "pod": "team-alpha",
+              "cost-optimization": "enabled"
+            }
+          ]
         },
-
         "client_protocol": {
           "description": "NOT a request field. Every instance is created with client_protocol = Encrypted — enforced by the Terraform module itself (validation rejects any other value); there is no override. Do not expose this as a UI field.",
           "x-not-settable": true
@@ -159,7 +608,6 @@
       }
     }
   },
-
   "x-fields-never-in-request": {
     "description": "These are computed entirely by Terraform and must never be exposed as UI inputs, even read-only ones that echo a value back — showing them invites someone to eventually try to set them.",
     "fields": [
@@ -168,5 +616,53 @@
       "tags.topology / tags.environment / tags.managed_by (always overwritten by Terraform even if present in tags)",
       "client_protocol / public_network_access (hard-fixed by the Terraform module to Encrypted / Disabled)"
     ]
+  },
+  "x-client-guidance": {
+    "description": "What an application team has to change for each clustering policy. Show this next to clustering_policy in the intake UI and in the onboarding confirmation. Hostname: <name>-<env>.<region>.redis.azure.net, port 10000, TLS on, access key or Entra ID token (authorization_mode).",
+    "EnterpriseCluster": {
+      "summary": "No code changes. Connect like a single Redis server.",
+      "connect": {
+        "spring-boot": "spring.data.redis.host=<host>, spring.data.redis.port=10000, spring.data.redis.ssl.enabled=true, spring.data.redis.password=<key>",
+        "lettuce": "RedisClient.create(RedisURI.builder().withHost(host).withPort(10000).withSsl(true).withPassword(key).build())",
+        "jedis": "new JedisPooled(new HostAndPort(host, 10000), DefaultJedisClientConfig.builder().ssl(true).password(key).build())",
+        "stackexchange-redis": "ConnectionMultiplexer.Connect(\"<host>:10000,ssl=true,password=<key>,abortConnect=false\")",
+        "redis-py": "redis.Redis(host=host, port=10000, ssl=True, password=key)",
+        "node-redis / ioredis": "createClient({ url: 'rediss://:<key>@<host>:10000' }) / new Redis({ host, port: 10000, password: key, tls: {} })",
+        "go-redis": "redis.NewClient(&redis.Options{Addr: host + \":10000\", Password: key, TLSConfig: &tls.Config{}})"
+      },
+      "watch-out-for": [
+        "Only database 0 (SELECT to another database is not supported).",
+        "Across keys, only DEL, MSET, MGET, EXISTS, UNLINK and TOUCH are allowed; for other multi-key commands, MULTI/EXEC and multi-key Lua, put the keys in one hash slot with a hash tag, e.g. {order:42}:items and {order:42}:total.",
+        "Network: only port 10000 to the cache's private endpoint."
+      ]
+    },
+    "OSSCluster": {
+      "summary": "Code and network changes required. Use only when the team needs maximum throughput and can run a cluster-aware client.",
+      "connect": {
+        "spring-boot": "Replace spring.data.redis.host/port with spring.data.redis.cluster.nodes=<host>:10000 (keep ssl.enabled=true and password). With Lettuce, enable topology refresh: spring.data.redis.lettuce.cluster.refresh.adaptive=true and spring.data.redis.lettuce.cluster.refresh.period=60s.",
+        "lettuce": "RedisClusterClient.create(redisUri) with ClusterClientOptions + ClusterTopologyRefreshOptions (enablePeriodicRefresh, enableAllAdaptiveRefreshTriggers); use StatefulRedisClusterConnection.",
+        "jedis": "RedisClusterClient.builder().nodes(Set.of(new HostAndPort(host, 10000))).clientConfig(sslConfig).build() (older Jedis: JedisCluster).",
+        "stackexchange-redis": "Same connection string as Enterprise; the library detects the cluster itself. Multi-key and transaction rules below still apply.",
+        "redis-py": "redis.cluster.RedisCluster(host=host, port=10000, ssl=True, password=key)",
+        "node-redis / ioredis": "createCluster({ rootNodes: [{ url: 'rediss://<host>:10000' }], defaults: { password: key } }) / new Redis.Cluster([{ host, port: 10000 }], { redisOptions: { password: key, tls: { servername: host } } })",
+        "go-redis": "redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{host + \":10000\"}, Password: key, TLSConfig: &tls.Config{ServerName: host}})"
+      },
+      "code-changes": [
+        "Switch the client/connection factory to its cluster variant (see connect).",
+        "Every multi-key command, MULTI/EXEC transaction, pipeline that must be atomic, and Lua script must only touch keys in ONE hash slot — redesign keys with hash tags, e.g. {user:42}:profile and {user:42}:cart. Otherwise the call fails with CROSSSLOT.",
+        "Don't use KEYS/SCAN expecting the whole keyspace from one connection; iterate per shard (most cluster clients offer a cluster-wide scan helper).",
+        "Never hard-code shard ports (85xx); the client discovers them and they can change.",
+        "Only database 0."
+      ],
+      "network": [
+        "Allow TCP 10000 AND 8500-8599 from the application to the cache's private endpoint (NSGs, firewalls).",
+        "The per-shard hostnames returned by the cluster must resolve to the private endpoint (platform team: confirm the Infoblox records cover them before approving OSSCluster)."
+      ]
+    },
+    "switching": {
+      "STANDALONE -> HA or DR with EnterpriseCluster": "No code changes; same client and settings. If the new cache has a different name, only the hostname/access key change.",
+      "STANDALONE -> HA or DR with OSSCluster": "Make every change listed under OSSCluster.code-changes and OSSCluster.network, and test against an OSSCluster cache before cut-over.",
+      "Existing cache -> other clustering policy": "Not an in-place change. Request a new cache with the new policy, migrate the data (export/import or dual-write), switch the application, then delete the old request."
+    }
   }
 }

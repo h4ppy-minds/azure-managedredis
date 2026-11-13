@@ -1,6 +1,6 @@
 ############################################################################
 # all-locals.tf — THE file to edit when you want to change an AZURE MANAGED
-# REDIS INSTANCE default (topology, HA/clustering, persistence, auth,
+# REDIS INSTANCE default (topology/HA, clustering, persistence, auth,
 # networking, deletion protection).
 #
 # Naming note: every local in this file uses hyphens, matching the
@@ -28,32 +28,71 @@ locals {
   defaults = {
     deployment-topology = "STANDALONE"
 
+    # Platform policy (v0.5.0). Each topology decides:
+    #   high-availability-enabled — HA default (1 node vs 2 nodes)
+    #   ha-optional               — may the caller turn HA off/on?
+    #   clustering-policies       — clustering policies allowed; the FIRST
+    #                               one is the default
+    #   create-dr / create-geo-replication
+    #
+    #   topology          HA                clustering              DR   geo
+    #   STANDALONE        optional (off)    EnterpriseCluster only  no   no
+    #   HA                always on         Enterprise (default)|OSS no  no
+    #   DR-ActivePassive  always on         Enterprise (default)|OSS yes no
+    #   DR-ActiveActive   always on         Enterprise (default)|OSS yes yes
+    #
+    # Why Enterprise is the default everywhere: one endpoint, any standard
+    # Redis client, so a STANDALONE (dev) cache and an HA/DR (prod) cache
+    # need the same client code. OSSCluster is an explicit opt-in for
+    # HA/DR only, because it needs a cluster-aware client.
+    # NoCluster is not offered (25 GB limit, slower, different client
+    # semantics from the clustered policies).
     topology-profile = {
       STANDALONE = {
         high-availability-enabled = false
-        clustering-policy         = "NoCluster"
+        ha-optional               = true
+        clustering-policies       = ["EnterpriseCluster"]
         create-dr                 = false
         create-geo-replication    = false
       }
       HA = {
         high-availability-enabled = true
-        clustering-policy         = "OSSCluster"
+        ha-optional               = false
+        clustering-policies       = ["EnterpriseCluster", "OSSCluster"]
         create-dr                 = false
         create-geo-replication    = false
       }
       "DR-ActivePassive" = {
         high-availability-enabled = true
-        clustering-policy         = "OSSCluster"
+        ha-optional               = false
+        clustering-policies       = ["EnterpriseCluster", "OSSCluster"]
         create-dr                 = true
         create-geo-replication    = false
       }
       "DR-ActiveActive" = {
         high-availability-enabled = true
-        clustering-policy         = "OSSCluster"
+        ha-optional               = false
+        clustering-policies       = ["EnterpriseCluster", "OSSCluster"]
         create-dr                 = true
         create-geo-replication    = true
       }
     }
+
+    # LEGACY ONLY: NoCluster is never a default and never offered to new
+    # requests (intake schema). It is accepted only when the caller passes
+    # clustering-policy = "NoCluster" explicitly — to keep STANDALONE
+    # caches created before v0.5.0 (when STANDALONE implied NoCluster)
+    # exactly as they are — and only on STANDALONE, and only on in-memory
+    # SKUs of 25 GB or less (Azure limit). Sizes from the Azure Managed
+    # Redis pricing page:
+    #   Balanced          B0 1, B1 1, B3 3, B5 6, B10 12, B20 24 GB
+    #   Compute Optimized X3 3, X5 6, X10 12, X20 24 GB
+    #   Memory Optimized  M10 12, M20 24 GB
+    legacy-nocluster-node-types = [
+      "Balanced_B0", "Balanced_B1", "Balanced_B3", "Balanced_B5", "Balanced_B10", "Balanced_B20",
+      "ComputeOptimized_X3", "ComputeOptimized_X5", "ComputeOptimized_X10", "ComputeOptimized_X20",
+      "MemoryOptimized_M10", "MemoryOptimized_M20",
+    ]
 
     # NOTE: there is deliberately no per-environment node-type default here
     # any more (v0.2.0). node-type is a REQUIRED variable — the caller
@@ -128,13 +167,13 @@ locals {
 
   redisearch-enabled = contains(local.redis-modules, "RediSearch")
 
-  # Topology/SKU value BEFORE the RediSearch override below — kept
-  # separately only so the effective value stays one readable line.
-  clustering-policy-requested = coalesce(
-    var.clustering-policy,
-    local.defaults.topology-profile[local.deployment-topology].clustering-policy
-  )
-  eviction-policy-requested = coalesce(var.eviction-policy, local.defaults.eviction-policy)
+  # Caller's value, else the topology's default (first allowed policy —
+  # EnterpriseCluster for every topology today). Kept separate from the
+  # effective value only so the RediSearch override below stays one
+  # readable line, and so the topology rule checks what was ASKED for.
+  clustering-policies-allowed = local.defaults.topology-profile[local.deployment-topology].clustering-policies
+  clustering-policy-requested = coalesce(var.clustering-policy, local.clustering-policies-allowed[0])
+  eviction-policy-requested   = coalesce(var.eviction-policy, local.defaults.eviction-policy)
 
   # RediSearch requires EnterpriseCluster + NoEviction (Azure requirement).
   # Silently forced, same pattern as persistence for DR-ActiveActive — the
@@ -148,7 +187,7 @@ locals {
   client-protocol       = "Encrypted"
   public-network-access = "Disabled"
 
-  authorization-mode = coalesce(var.authorization-mode, local.defaults.authorization-mode)
+  authorization-mode                 = coalesce(var.authorization-mode, local.defaults.authorization-mode)
   access-keys-authentication-enabled = local.authorization-mode == "AccessKey"
 
   persistence-mode          = coalesce(var.persistence-mode, local.defaults.persistence-mode)
@@ -168,6 +207,21 @@ locals {
 
   create-dr              = local.defaults.topology-profile[local.deployment-topology].create-dr
   create-geo-replication = local.defaults.topology-profile[local.deployment-topology].create-geo-replication
+
+  # --- Platform policy + Azure rules, enforced as lifecycle
+  # preconditions on azurerm_managed_redis.primary, i.e. at PLAN time. ---
+  # Clustering policy must be one the topology allows (STANDALONE:
+  # EnterpriseCluster only).
+  # Legacy NoCluster (explicit, STANDALONE only) is the one exception.
+  legacy-nocluster              = local.clustering-policy-requested == "NoCluster"
+  valid-clustering-for-topology = contains(local.clustering-policies-allowed, local.clustering-policy-requested) || (local.legacy-nocluster && local.deployment-topology == "STANDALONE")
+  # Legacy NoCluster only on in-memory SKUs of 25 GB or less (Azure).
+  valid-legacy-nocluster-for-sku = !local.legacy-nocluster || contains(local.defaults.legacy-nocluster-node-types, var.node-type)
+  # HA may only be turned off where the topology makes it optional
+  # (STANDALONE). Also covers Azure's "geo-replication requires HA".
+  valid-ha-for-topology = local.high-availability-enabled || local.defaults.topology-profile[local.deployment-topology].ha-optional
+  # Persistence (RDB/AOF) requires HA (Azure).
+  valid-persistence-for-ha = local.high-availability-enabled || local.persistence-mode-effective == "DISABLED"
 
   persistence-mode-effective = local.create-geo-replication ? "DISABLED" : local.persistence-mode
 

@@ -193,9 +193,9 @@ locals {
       # (or any other configured region) work as a PRIMARY location, not
       # just as a DR target.
       resource-group-name      = local._env_infra.regions[local._instance_locations[name]].resource_group_name
-      subnet-name               = local._env_infra.regions[local._instance_locations[name]].networking.subnet_name
-      vnet-name                 = local._env_infra.regions[local._instance_locations[name]].networking.vnet_name
-      vnet-resource-group-name  = local._env_infra.regions[local._instance_locations[name]].networking.vnet_resource_group_name
+      subnet-name              = local._env_infra.regions[local._instance_locations[name]].networking.subnet_name
+      vnet-name                = local._env_infra.regions[local._instance_locations[name]].networking.vnet_name
+      vnet-resource-group-name = local._env_infra.regions[local._instance_locations[name]].networking.vnet_resource_group_name
 
       # --- Deployment topology (single settable knob) ---
       deployment-topology = local._instance_topologies[name]
@@ -250,6 +250,31 @@ locals {
       eviction-policy = try(
         payload.instance.eviction_policy,
         local._instance_wants_redisearch[name] ? "NoEviction" : local._defaults_raw.eviction_policy
+      )
+
+      # --- HA and clustering policy — platform policy per topology
+      # (redis module 0.5.0, local.defaults.topology-profile):
+      #   STANDALONE        HA optional (default off), EnterpriseCluster
+      #                     (NoCluster only as an explicit legacy pin on
+      #                     caches created before 0.5.0)
+      #   HA / DR-*         HA always on, EnterpriseCluster (default) or OSSCluster
+      # Violations fail the plan in the module; the checks below name the
+      # request.
+      #
+      # high_availability: only meaningful for STANDALONE. null = topology
+      # default (off for STANDALONE, on for the rest).
+      high-availability-enabled = try(payload.instance.high_availability, null)
+
+      # Request value, else default.json's (EnterpriseCluster), else the
+      # module's topology default (also EnterpriseCluster). A RediSearch
+      # request that doesn't set it gets EnterpriseCluster (Azure
+      # requirement), so it never trips the module's "forced" warning.
+      # Create-time only: on an EXISTING instance a different value fails
+      # the plan (module's clustering policy guard) instead of letting
+      # azurerm wipe the database.
+      clustering-policy = try(
+        payload.instance.clustering_policy,
+        local._instance_wants_redisearch[name] ? "EnterpriseCluster" : try(local._defaults_raw.clustering_policy, null)
       )
 
       # --- Redis modules (create-time only — changing either forces the
@@ -375,6 +400,14 @@ locals {
     ])
   ]
 
+  # RediSearch + an explicitly requested clustering_policy other than
+  # EnterpriseCluster: the module forces EnterpriseCluster, this makes it
+  # visible.
+  _requests_with_redisearch_clustering_conflict = [
+    for name, payload in local._requested_instances : name
+    if local._instance_wants_redisearch[name] && coalesce(try(payload.instance.clustering_policy, null), "EnterpriseCluster") != "EnterpriseCluster"
+  ]
+
   # RediSearch + an explicitly requested eviction_policy other than
   # NoEviction: the module forces NoEviction, this makes it visible.
   _requests_with_redisearch_eviction_conflict = [
@@ -418,10 +451,86 @@ check "redis-modules-sku-compatible" {
   }
 }
 
+check "redisearch-requires-enterprise-cluster" {
+  assert {
+    condition     = length(local._requests_with_redisearch_clustering_conflict) == 0
+    error_message = "Request(s) enabling RediSearch with an explicit clustering_policy other than EnterpriseCluster: ${join(", ", local._requests_with_redisearch_clustering_conflict)}. Azure requires EnterpriseCluster for RediSearch — the redis module forces it for this apply. Remove clustering_policy from the request, or set it to EnterpriseCluster."
+  }
+}
+
 check "redisearch-requires-noeviction" {
   assert {
     condition     = length(local._requests_with_redisearch_eviction_conflict) == 0
     error_message = "Request(s) enabling RediSearch with an explicit eviction_policy other than NoEviction: ${join(", ", local._requests_with_redisearch_eviction_conflict)}. Azure requires NoEviction (and EnterpriseCluster clustering) for RediSearch — the redis module forces both for this apply. Remove eviction_policy from the request, or set it to NoEviction."
+  }
+}
+
+############################################
+# HA / clustering — early, per-request warnings.
+#
+# Advisory, same as the module checks above: the HARD enforcement is the
+# redis module's lifecycle preconditions (plan fails). These only name
+# the offending request.
+############################################
+
+locals {
+  _requests_with_oss_on_standalone = [
+    for name, cfg in local._redis_raw : name
+    if cfg.deployment-topology == "STANDALONE" && cfg.clustering-policy == "OSSCluster"
+  ]
+
+  # Legacy NoCluster pin (pre-0.5.0 STANDALONE caches only): must be
+  # STANDALONE and a SKU of 25 GB or less. Same list as the redis module's
+  # local.defaults.legacy-nocluster-node-types.
+  _legacy_nocluster_node_types = [
+    "Balanced_B0", "Balanced_B1", "Balanced_B3", "Balanced_B5", "Balanced_B10", "Balanced_B20",
+    "ComputeOptimized_X3", "ComputeOptimized_X5", "ComputeOptimized_X10", "ComputeOptimized_X20",
+    "MemoryOptimized_M10", "MemoryOptimized_M20",
+  ]
+  _requests_with_invalid_legacy_nocluster = [
+    for name, cfg in local._redis_raw : "${name} (${cfg.deployment-topology}, ${cfg.node-type})"
+    if cfg.clustering-policy == "NoCluster" && (cfg.deployment-topology != "STANDALONE" || !contains(local._legacy_nocluster_node_types, cfg.node-type))
+  ]
+
+  _requests_with_ha_off_outside_standalone = [
+    for name, cfg in local._redis_raw : name
+    if cfg.deployment-topology != "STANDALONE" && cfg.high-availability-enabled == false
+  ]
+
+  # Persistence requires HA; only STANDALONE can be without it (unless the
+  # request sets high_availability = true). DR-ActiveActive forces
+  # persistence off itself, so it's never a conflict.
+  _requests_with_persistence_without_ha = [
+    for name, cfg in local._redis_raw : name
+    if cfg.deployment-topology == "STANDALONE" && cfg.high-availability-enabled != true && cfg.persistence-mode != "DISABLED"
+  ]
+}
+
+check "standalone-is-enterprise-cluster-only" {
+  assert {
+    condition     = length(local._requests_with_oss_on_standalone) == 0
+    error_message = "STANDALONE request(s) asking for clustering_policy = OSSCluster: ${join(", ", local._requests_with_oss_on_standalone)}. STANDALONE caches are always EnterpriseCluster; OSSCluster is available for HA and DR topologies. Remove clustering_policy (or set EnterpriseCluster). Plan will fail in the redis module for these requests."
+  }
+}
+
+check "legacy-nocluster-only-standalone-25gb" {
+  assert {
+    condition     = length(local._requests_with_invalid_legacy_nocluster) == 0
+    error_message = "Request(s) with clustering_policy = NoCluster outside its legacy use: ${join(", ", local._requests_with_invalid_legacy_nocluster)}. NoCluster is only kept for STANDALONE caches created before template 0.5.0, on node_type of 25 GB or less (${join(", ", local._legacy_nocluster_node_types)}). New requests use EnterpriseCluster (or OSSCluster for HA/DR). Plan will fail in the redis module for these requests."
+  }
+}
+
+check "ha-only-optional-for-standalone" {
+  assert {
+    condition     = length(local._requests_with_ha_off_outside_standalone) == 0
+    error_message = "Request(s) with high_availability = false on an HA/DR topology: ${join(", ", local._requests_with_ha_off_outside_standalone)}. Only STANDALONE may run without HA. Remove high_availability from the request. Plan will fail in the redis module for these requests."
+  }
+}
+
+check "persistence-requires-ha" {
+  assert {
+    condition     = length(local._requests_with_persistence_without_ha) == 0
+    error_message = "STANDALONE request(s) with persistence enabled but high availability off: ${join(", ", local._requests_with_persistence_without_ha)}. Azure only supports RDB/AOF persistence with high availability. Set high_availability = true, or persistence.mode = DISABLED. Plan will fail in the redis module for these requests."
   }
 }
 
@@ -434,8 +543,11 @@ locals {
   # flagged for these.
   _production_like_envs = ["preprod", "prod"]
 
+  # STANDALONE without HA (single node). STANDALONE with
+  # high_availability = true is replicated, so it isn't flagged.
   _standalone_requests = [
-    for name, topology in local._instance_topologies : name if topology == "STANDALONE"
+    for name, topology in local._instance_topologies : name
+    if topology == "STANDALONE" && try(local._requested_instances[name].instance.high_availability, false) != true
   ]
 
   # The module caps its full name at 57 characters (Azure's 60 minus
@@ -451,7 +563,7 @@ locals {
 check "prod-should-not-be-standalone" {
   assert {
     condition     = !contains(local._production_like_envs, var.env) || length(local._standalone_requests) == 0
-    error_message = "Environment '${var.env}' has STANDALONE request(s): ${join(", ", local._standalone_requests)}. STANDALONE has no HA and no DR. If this is intentional (e.g. a short-lived parity test), this check is advisory only and does not block the apply."
+    error_message = "Environment '${var.env}' has STANDALONE request(s) without high availability: ${join(", ", local._standalone_requests)}. A single-node cache has no replica, no SLA and no DR. If this is intentional (e.g. a short-lived parity test), this check is advisory only and does not block the apply."
   }
 }
 

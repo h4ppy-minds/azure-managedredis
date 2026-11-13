@@ -1,0 +1,18 @@
+{
+  "type": "instance",
+  "request_type": "create",
+  "environment": "dev",
+  "requested_by": "platform-team",
+  "instance": {
+    "name": "test-standalone-ha-cache",
+    "deployment_topology": "STANDALONE",
+    "high_availability": true,
+    "node_type": "Balanced_B0",
+    "persistence": {
+      "mode": "RDB"
+    },
+    "application_id": "platform-demo",
+    "lob": "cc-0006",
+    "deletion_protection_enabled": false
+  }
+}

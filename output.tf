@@ -7,6 +7,7 @@ output "redis-instances" {
       redis-primary-port           = inst["redis-primary-port"]
       resolved-environment         = var.env # the module no longer knows the environment (v0.3.0); key kept for consumers
       resolved-deployment-topology = inst["resolved-deployment-topology"]
+      high-availability-enabled    = inst["high-availability-enabled"]
       authorization-mode           = inst["authorization-mode"]
       deletion-protection-enabled  = inst["deletion-protection-enabled"]
 
@@ -36,10 +37,12 @@ output "redis-primary-access-keys" {
 }
 
 output "derived-config-by-instance" {
-  description = "Debug helper: shows the dr-location, tags, redis-modules and eviction-policy that locals.tf derived for each onboarded instance, before it was even sent to the module — useful for reviewing an onboarding PR's actual effect without running plan."
+  description = "Debug helper: shows the dr-location, clustering-policy, tags, redis-modules and eviction-policy that locals.tf derived for each onboarded instance, before it was even sent to the module — useful for reviewing an onboarding PR's actual effect without running plan."
   value = {
     for name, cfg in local.redis : name => {
       deployment-topology = cfg["deployment-topology"]
+      clustering-policy    = cfg["clustering-policy"]
+      high-availability    = cfg["high-availability-enabled"]
       dr-location          = cfg["dr-location"]
       tags                 = cfg.tags
       redis-modules        = cfg["redis-modules"]

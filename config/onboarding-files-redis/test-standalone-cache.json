@@ -6,9 +6,10 @@
   "instance": {
     "name": "test-standalone-cache",
     "deployment_topology": "STANDALONE",
+    "clustering_policy": "NoCluster",
     "node_type": "Balanced_B0",
     "application_id": "platform-demo",
-    "lob": "cfes",
+    "lob": "cc-0001",
     "deletion_protection_enabled": false
   }
 }

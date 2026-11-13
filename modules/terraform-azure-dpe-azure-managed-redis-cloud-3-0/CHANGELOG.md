@@ -11,6 +11,76 @@ All notable changes to this module are documented here. Format follows
 - Customer-managed key (CMK) encryption support
 - Automate the Entra ID data-plane grant once azurerm supports it
 
+## [0.5.0] - 2026-11-12
+
+**Breaking for existing caches whose request doesn't state a clustering
+policy** — see Migration. Nothing changes in Azure for any existing cache.
+
+### Changed
+- **Platform policy for HA and clustering per topology**
+  (`local.defaults.topology-profile`). Each topology now defines its HA
+  default, whether HA is optional, and the allowed clustering policies
+  (first = default), instead of one fixed clustering policy:
+
+  | Topology | HA | Clustering (first = default) | DR | Geo |
+  |---|---|---|---|---|
+  | STANDALONE | optional, default off | EnterpriseCluster | no | no |
+  | HA | always on | EnterpriseCluster, OSSCluster | no | no |
+  | DR-ActivePassive | always on | EnterpriseCluster, OSSCluster | yes | no |
+  | DR-ActiveActive | always on | EnterpriseCluster, OSSCluster | yes | yes |
+
+  Before: STANDALONE → NoCluster, HA/DR → OSSCluster, not selectable. That
+  made dev (STANDALONE) and prod (HA) need different client code and made
+  STANDALONE impossible above 25 GB.
+- Default clustering policy is now **EnterpriseCluster** for every
+  topology (single endpoint, any standard client).
+- **NoCluster is legacy only**: never a default; accepted only when passed
+  explicitly, only for STANDALONE, only on SKUs of 25 GB or less
+  (`local.defaults.legacy-nocluster-node-types`). Kept so pre-0.5.0
+  STANDALONE caches can stay as they are.
+- Descriptions of `deployment-topology`, `high-availability-enabled`,
+  `clustering-policy` and `persistence-mode` rewritten.
+
+### Added
+- **Clustering policy guard.** azurerm 4.x applies a `clustering_policy`
+  change by deleting and re-creating the database (all data lost, new
+  keys) while `terraform plan` shows only `~ update in-place`. Both
+  `azurerm_managed_redis` resources now `ignore_changes` on
+  `default_database[0].clustering_policy` and have a postcondition that
+  the actual policy equals the requested one, so such a change **fails
+  the plan** with instructions instead of wiping the cache.
+- Plan-time preconditions on `azurerm_managed_redis.primary`:
+  clustering policy allowed for the topology; HA off only for STANDALONE
+  (also covers "geo-replication requires HA"); persistence requires HA;
+  legacy NoCluster only on SKUs of 25 GB or less.
+- Output `high-availability-enabled`.
+- Tests: `tests/clustering-and-ha.tftest.hcl` (policy per topology, HA
+  rules, NoCluster limits, guard on an existing OSS cache) and
+  `tests/legacy-nocluster.tftest.hcl` (pre-0.5.0 STANDALONE cache: plan
+  fails without the pin, clean with it). 51 runs in total.
+- README: "Platform policy: topology, HA and clustering", "What the HA
+  toggle means", "Does DR work without HA?", "Clustering policy",
+  "Changing the clustering policy of an existing cache", "Upgrading
+  existing caches to 0.5.0".
+
+### Fixed
+- README said module and clustering-policy changes show as
+  `must be replaced`; with azurerm 4.x they show as an in-place update of
+  `default_database` and still wipe the data. Also corrected: any
+  `node-type` change replaces the cache (`sku_name` is ForceNew).
+- `tests/redis-modules.tftest.hcl`: the `command = apply` run moved to the
+  end (runs share state, so later plans were updates of it); two
+  assertions updated for the EnterpriseCluster default.
+
+### Migration
+- Existing caches got their policy implicitly. **Before upgrading**, add
+  to each existing request: `STANDALONE` → `clustering-policy =
+  "NoCluster"`; `HA`/`DR-*` without RediSearch → `"OSSCluster"`; with
+  RediSearch → nothing. Otherwise their plan fails with "Clustering policy
+  change blocked for <name>" — nothing is changed or deleted; the failure
+  is the protection.
+- After pinning, every existing cache must plan with no changes.
+
 ## [0.4.0] - 2026-11-09
 
 ### Added

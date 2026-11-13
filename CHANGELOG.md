@@ -8,6 +8,59 @@ which module version it's paired with.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-12 (paired with redis module v0.5.0)
+
+### Added
+- **`clustering_policy` request field**: `EnterpriseCluster` (default) for
+  every topology, `OSSCluster` for HA/DR only. Fallback: request →
+  `default.json.clustering_policy` (new, `EnterpriseCluster`) → module
+  topology default. RediSearch requests get `EnterpriseCluster`
+  automatically. Passed to the module (`clustering-policy`).
+- **`high_availability` request field** (STANDALONE only): `true` = two
+  nodes, allows persistence. HA/DR always have HA. Passed to the module
+  (`high-availability-enabled`).
+- Intake schema:
+  - `clustering_policy` as `oneOf` options with title/description for the
+    UI (`x-ui-options`: EnterpriseCluster, OSSCluster); `NoCluster` listed
+    as deprecated/legacy-only, never to be offered.
+  - `high_availability` with `x-ui-show-when` STANDALONE.
+  - Rules: STANDALONE → EnterpriseCluster (or legacy NoCluster); HA/DR →
+    `high_availability` true; NoCluster only STANDALONE and ≤ 25 GB;
+    RediSearch → EnterpriseCluster; STANDALONE without HA → persistence
+    DISABLED.
+  - Top-level **`x-client-guidance`**: per policy, how to connect (Spring
+    Boot, Lettuce, Jedis, StackExchange.Redis, redis-py, node-redis /
+    ioredis, go-redis), code changes and network/DNS needs for
+    OSSCluster, and what switching from STANDALONE means (Enterprise: no
+    code change; OSS: listed changes).
+  - `deployment_topology` description rewritten around the policy.
+- Advisory checks naming the request: `standalone-is-enterprise-cluster-only`,
+  `ha-only-optional-for-standalone`, `persistence-requires-ha`,
+  `legacy-nocluster-only-standalone-25gb`,
+  `redisearch-requires-enterprise-cluster`.
+- Outputs: `redis-instances[*].high-availability-enabled`;
+  `derived-config-by-instance[*]` `clustering-policy`, `high-availability`.
+- Fixture `test-standalone-ha-cache.json` (STANDALONE + HA + RDB).
+- README: "High availability, DR and clustering policy" and "Upgrading
+  existing caches to 0.5.0" with the checklist of existing consumer caches.
+
+### Changed
+- `prod-should-not-be-standalone` now flags only STANDALONE requests
+  without `high_availability: true`.
+- Fixtures: `test-standalone-cache.json` pins `NoCluster` and
+  `test-ha-cache.json` pins `OSSCluster` (both deployed before 0.5.0);
+  `test-dr-active-passive-cache.json` shows `OSSCluster`;
+  `test-dr-active-active-cache.json` `Balanced_B0` → `Balanced_B10` (B0/B1
+  can't geo-replicate, so it was never deployable).
+
+### Migration
+- Upgrade the module to 0.5.0 at the same time.
+- **Before applying**, add `clustering_policy` to every existing request
+  (README checklist): STANDALONE → `"NoCluster"`, HA/DR without
+  RediSearch → `"OSSCluster"`. Then plan each environment: existing caches
+  must show no changes and the plan 0 to destroy.
+- Never remove a request file to skip a cache — Terraform would destroy it.
+
 ## [0.4.0] - 2026-11-09 (paired with redis module v0.4.0)
 
 ### Added

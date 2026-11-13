@@ -2,8 +2,20 @@
 # Primary and DR Azure Managed Redis instance(s).
 #
 # local.deployment-topology (all-locals.tf) is the single source of truth
-# for HA, clustering, whether DR exists at all (local.create-dr), and
-# whether it's live-replicated (local.create-geo-replication).
+# for HA, whether DR exists at all (local.create-dr), and whether it's
+# live-replicated (local.create-geo-replication). It also limits the
+# clustering policy (local.clustering-policies-allowed): STANDALONE is
+# EnterpriseCluster only; HA/DR allow EnterpriseCluster (default) or OSS.
+#
+# CLUSTERING POLICY GUARD: both resources below ignore changes to
+# default_database[0].clustering_policy and carry a postcondition that
+# the instance's ACTUAL policy equals the requested one. Why: the azurerm
+# provider (4.x) applies a clustering_policy change by DELETING and
+# re-creating the database — all data lost — while `terraform plan` shows
+# only "~ update in-place". With ignore_changes the planned value stays
+# the real one, so the postcondition fails the PLAN, naming the instance,
+# instead of silently wiping it at apply. A new instance (or one
+# replaced with `-replace=`) is built from config, so it always passes.
 #
 # TAGS: both resources below use lifecycle { ignore_changes = [tags] }.
 # Tags are set on first create only — Terraform will never modify them on
@@ -53,7 +65,7 @@ resource "azurerm_managed_redis" "primary" {
   }
 
   lifecycle {
-    ignore_changes = [tags]
+    ignore_changes = [tags, default_database[0].clustering_policy]
 
     precondition {
       condition     = local.valid-subnet-for-private-endpoint
@@ -74,6 +86,32 @@ resource "azurerm_managed_redis" "primary" {
     precondition {
       condition     = length(local.redis-module-args-without-module) == 0
       error_message = "redis-module-args sets args for module(s) not listed in redis-modules: ${join(", ", local.redis-module-args-without-module)}. Add them to redis-modules, or remove their args."
+    }
+
+    # --- Platform policy for HA / clustering per topology (see
+    # local.defaults.topology-profile), plus Azure's HA requirements.
+    # Checked on the primary only — the DR instance always gets the same
+    # values. ---
+    precondition {
+      condition     = local.valid-clustering-for-topology
+      error_message = "clustering-policy = '${local.clustering-policy-requested}' is not offered for deployment-topology = '${local.deployment-topology}'. Allowed: ${join(", ", local.clustering-policies-allowed)} (default ${local.clustering-policies-allowed[0]}). STANDALONE caches are EnterpriseCluster (NoCluster only as an explicit legacy pin for STANDALONE caches created before v0.5.0); OSSCluster is available for HA and DR topologies."
+    }
+    precondition {
+      condition     = local.valid-legacy-nocluster-for-sku
+      error_message = "Legacy clustering-policy = NoCluster is only possible on in-memory SKUs of 25 GB or less, but node-type = '${var.node-type}'. Allowed: ${join(", ", local.defaults.legacy-nocluster-node-types)}."
+    }
+    precondition {
+      condition     = local.valid-ha-for-topology
+      error_message = "high-availability-enabled = false is only allowed for deployment-topology = STANDALONE. '${local.deployment-topology}' always runs with high availability${local.create-geo-replication ? " (Azure also requires HA for active geo-replication)" : ""}. Remove the override."
+    }
+    precondition {
+      condition     = local.valid-persistence-for-ha
+      error_message = "persistence-mode = '${local.persistence-mode-effective}' requires high availability, but this instance has HA off (deployment-topology = '${local.deployment-topology}'). Azure only supports persistence on HA instances. For STANDALONE set high-availability-enabled = true (request field high_availability), or use persistence-mode = DISABLED."
+    }
+    # See "CLUSTERING POLICY GUARD" at the top of this file.
+    postcondition {
+      condition     = self.default_database[0].clustering_policy == local.clustering-policy
+      error_message = "Clustering policy change blocked for ${self.name}: it is ${self.default_database[0].clustering_policy} today but ${local.clustering-policy} was requested. The azurerm provider applies this by deleting and re-creating the database (ALL DATA LOST) even though the plan would only show an in-place update, so this module refuses it. Either (a) keep the cache as it is: set clustering-policy (request field clustering_policy) to ${self.default_database[0].clustering_policy}; or (b) migrate deliberately: export/back up the data, set deletion-protection-enabled = false, keep the new value, and run `terraform apply -replace=<this resource address>`, then re-import data. Remember OSSCluster needs a cluster-aware client and EnterpriseCluster a standard one."
     }
   }
 }
@@ -119,7 +157,7 @@ resource "azurerm_managed_redis" "dr" {
   }
 
   lifecycle {
-    ignore_changes = [tags]
+    ignore_changes = [tags, default_database[0].clustering_policy]
 
     precondition {
       condition     = local.valid-dr-location-for-dr
@@ -128,6 +166,11 @@ resource "azurerm_managed_redis" "dr" {
     precondition {
       condition     = local.valid-dr-subnet-inputs
       error_message = "deployment-topology = '${local.deployment-topology}' creates a DR instance, which always gets a private endpoint. Set dr-subnet-id, or all of dr-subnet-name/dr-vnet-name/dr-vnet-resource-group-name."
+    }
+    # See "CLUSTERING POLICY GUARD" at the top of this file.
+    postcondition {
+      condition     = self.default_database[0].clustering_policy == local.clustering-policy
+      error_message = "Clustering policy change blocked for ${self.name}: it is ${self.default_database[0].clustering_policy} today but ${local.clustering-policy} was requested. The azurerm provider applies this by deleting and re-creating the database (ALL DATA LOST) even though the plan would only show an in-place update, so this module refuses it. Either (a) keep the cache as it is: set clustering-policy (request field clustering_policy) to ${self.default_database[0].clustering_policy}; or (b) migrate deliberately: export/back up the data, set deletion-protection-enabled = false, keep the new value, and run `terraform apply -replace=<this resource address>`, then re-import data. Remember OSSCluster needs a cluster-aware client and EnterpriseCluster a standard one."
     }
   }
 }

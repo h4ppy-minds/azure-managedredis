@@ -24,8 +24,13 @@ output "redis-primary-access-key" {
 }
 
 output "resolved-deployment-topology" {
-  description = "The effective deployment topology used to derive HA/clustering/DR/geo-replication."
+  description = "The effective deployment topology used to derive HA (replication), DR and geo-replication. It also limits which clustering policies are allowed — see the clustering-policy output."
   value       = local.deployment-topology
+}
+
+output "high-availability-enabled" {
+  description = "Whether high availability (2 nodes, primary + replica shards) is on for the primary (and DR, if any)."
+  value       = local.high-availability-enabled
 }
 
 output "authorization-mode" {
@@ -73,7 +78,7 @@ output "redis-modules" {
 }
 
 output "clustering-policy" {
-  description = "The clustering policy actually applied. May differ from the clustering-policy input/topology default — forced to EnterpriseCluster when redis-modules includes RediSearch."
+  description = "The clustering policy actually applied (the clustering-policy input, else the topology default EnterpriseCluster). Forced to EnterpriseCluster when redis-modules includes RediSearch. On an existing instance the plan fails rather than change it — see the clustering policy guard in main.tf."
   value       = local.clustering-policy
 }
 

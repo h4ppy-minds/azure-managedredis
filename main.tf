@@ -70,6 +70,14 @@ module "redis" {
 
   eviction-policy = each.value.eviction-policy
 
+  # --- HA and clustering policy (module 0.5.0+): allowed values depend
+  # on deployment-topology — STANDALONE: HA optional, EnterpriseCluster
+  # only; HA/DR: HA always on, EnterpriseCluster or OSSCluster. Clustering
+  # is create-time only: on an existing instance a different value fails
+  # the plan instead of wiping data. ---
+  high-availability-enabled = each.value.high-availability-enabled
+  clustering-policy         = each.value.clustering-policy
+
   # --- Redis modules — e.g. ["RediSearch", "RedisJSON", "Bloom",
   # "TimeSeries"]. Validated and normalised by the module itself (names,
   # duplicates, DR-ActiveActive and SKU compatibility); RediSearch also

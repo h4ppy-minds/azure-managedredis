@@ -1,0 +1,18 @@
+{
+  "type": "instance",
+  "request_type": "create",
+  "environment": "dev",
+  "requested_by": "platform-team",
+  "instance": {
+    "name": "test-ha-modules-cache",
+    "deployment_topology": "HA",
+    "node_type": "Balanced_B0",
+    "redis_modules": ["RediSearch", "RedisJSON", "Bloom", "TimeSeries"],
+    "redis_module_args": {
+      "Bloom": "ERROR_RATE 0.01 INITIAL_SIZE 400"
+    },
+    "application_id": "platform-demo",
+    "lob": "cc-0005",
+    "deletion_protection_enabled": false
+  }
+}

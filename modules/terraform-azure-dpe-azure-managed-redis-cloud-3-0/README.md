@@ -2,11 +2,17 @@
 
 Single, reusable Terraform module for an
 [Azure Managed Redis](https://learn.microsoft.com/en-us/azure/redis/) (Redis
-Enterprise-based) instance — sizing, HA/clustering, persistence, auth mode,
+Enterprise-based) instance — sizing, HA, clustering policy, persistence, auth mode,
 private endpoints in both regions, deletion protection, and optional DR
 with active-active geo-replication.
 
-Current module version: **0.4.0** — see [CHANGELOG.md](./CHANGELOG.md).
+Current module version: **0.5.0** — see [CHANGELOG.md](./CHANGELOG.md).
+0.5.0 introduces the platform policy for HA and clustering per topology
+(STANDALONE: HA optional, EnterpriseCluster; HA/DR: HA on,
+EnterpriseCluster or OSSCluster) and a guard that fails the plan instead of
+letting a clustering policy change wipe a cache. **Existing caches must
+state the clustering policy they have today in their request** — see
+"Upgrading existing caches to 0.5.0".
 0.4.0 gives every instance a second private endpoint in the other region
 (see "Private endpoints"). Existing STANDALONE/HA instances only gain that one
 endpoint; nothing existing changes. 0.3.0 was breaking for callers only: the
@@ -126,27 +132,74 @@ Everything in this module lives in this one directory. The primary and
 (optional) DR instance are two explicit `azurerm_managed_redis` resource
 blocks in `main.tf`, not two calls into a shared internal module.
 
-## deployment-topology is the single knob for topology
+## Platform policy: topology, HA and clustering
 
 ```
-deployment-topology = "STANDALONE" | "HA" | "DR-ActivePassive" | "DR-ActiveActive"
+deployment-topology       = "STANDALONE" | "HA" | "DR-ActivePassive" | "DR-ActiveActive"
+high-availability-enabled = true | false          # STANDALONE only
+clustering-policy         = "EnterpriseCluster" | "OSSCluster"
 ```
 
-| `deployment-topology` | HA | Clustering | DR instance | Live geo-replication |
+The topology decides HA, which clustering policies are allowed, DR and
+geo-replication. Defined in `local.defaults.topology-profile`
+(`all-locals.tf`):
+
+| `deployment-topology` | HA | Clustering policy (first = default) | DR instance | Geo-replication |
 |---|---|---|---|---|
-| `STANDALONE` | off | `NoCluster` | no | no |
-| `HA` | on | `OSSCluster` | no | no |
-| `DR-ActivePassive` | on | `OSSCluster` | yes | no |
-| `DR-ActiveActive` | on | `OSSCluster` | yes | yes |
+| `STANDALONE` | **optional**, default off | `EnterpriseCluster` | no | no |
+| `HA` | always on | `EnterpriseCluster`, `OSSCluster` | no | no |
+| `DR-ActivePassive` | always on | `EnterpriseCluster`, `OSSCluster` | yes, not linked | no |
+| `DR-ActiveActive` | always on | `EnterpriseCluster`, `OSSCluster` | yes | yes |
 
-Clustering is forced to `EnterpriseCluster` for every topology when
-`redis-modules` includes RediSearch — see "Redis modules" below.
+How an instance is resolved:
+
+1. **HA**: `high-availability-enabled` if given, else the topology's value.
+   `false` is only allowed for `STANDALONE`; anything else fails the plan.
+2. **Clustering**: `clustering-policy` if given, else the topology's
+   default (`EnterpriseCluster`). A value the topology doesn't allow fails
+   the plan. RediSearch forces `EnterpriseCluster`.
+3. **DR / geo-replication**: from the topology.
+
+`NoCluster` is **legacy only** — see "Upgrading existing caches to 0.5.0".
+
+### What the HA toggle means
+
+Azure never shows "2 instances". It's one cache with one hostname; HA
+decides what runs behind it.
+
+- **HA on**: at least two nodes. Each shard has a primary on one node and
+  a replica on another; Azure replicates and fails over automatically. In
+  regions with availability zones the nodes are in different zones. Comes
+  with the availability SLA. Azure's "PAYG Two Node" price; reservations
+  exist only for this mode.
+- **HA off** (`STANDALONE` default): one node, no replica, roughly half
+  the price ("PAYG One Node"). No SLA, no zone redundancy, no persistence
+  (the plan fails for HA off + RDB/AOF). If the node fails, or during
+  Azure patching, the cache is unavailable and its data is lost.
+  Dev/test only.
+- **`STANDALONE` with HA on**: two nodes in one region, no DR — same
+  shape as `HA` with `EnterpriseCluster`. Moving such a cache to the `HA`
+  topology later changes nothing in Azure.
+- **Changing HA on an existing cache replaces it** (new cache, new
+  private endpoint, new keys, all data lost): `high_availability_enabled`
+  is ForceNew in azurerm, even though Azure itself can turn HA on in
+  place. The plan shows `must be replaced`.
+
+### Does DR work without HA?
+
+No — not in this module. `DR-ActiveActive` can't by Azure's rules (every
+geo-replicated instance needs HA). `DR-ActivePassive` technically could,
+because the two caches aren't linked, but the platform policy keeps HA on
+for both: a node failure in the main region is far more likely than a
+region outage, and a DR copy doesn't help with that.
 
 ### DR-ActiveActive vs. DR-ActivePassive
 
 - **`DR-ActiveActive`**: primary and DR are linked with
   `azurerm_managed_redis_geo_replication`, giving live, bidirectional
-  replication. Azure does **not** allow persistence on a geo-replicated
+  replication. Both caches must have HA on and identical SKU, clustering
+  policy, eviction policy and modules (the module gives them the same
+  values). Azure does **not** allow persistence on a geo-replicated
   database, so `persistence-mode` is automatically forced to `DISABLED` in
   this mode. Also requires a geo-replication-capable `node-type`
   (`Balanced_B10`+ or equivalent) — see the
@@ -154,6 +207,103 @@ Clustering is forced to `EnterpriseCluster` for every topology when
 - **`DR-ActivePassive`**: a DR instance is still provisioned, but Azure
   Managed Redis has no native "passive replica" concept — DR is a
   **standalone instance** you keep in sync yourself.
+
+## Clustering policy
+
+Every cache runs several Redis processes (**shards**); the SKU decides how
+many — you never set a shard count. The clustering policy only decides
+**how clients reach those shards**.
+
+| | `EnterpriseCluster` (default) | `OSSCluster` (HA/DR opt-in) |
+|---|---|---|
+| How clients connect | One endpoint (`<name>.<region>.redis.azure.net:10000`); an Azure proxy routes each command to its shard | Client discovers the shards (`CLUSTER NODES`) and connects to each directly |
+| Client library | Any standard Redis client — no code changes | **Must be cluster-aware** (Lettuce `RedisClusterClient`, Jedis cluster client, redis-py `RedisCluster`, node-redis `createCluster`, …) |
+| Performance | Good; small extra hop through the proxy | Best throughput and latency |
+| Multi-key commands | Across slots only `DEL`, `MSET`, `MGET`, `EXISTS`, `UNLINK`, `TOUCH`; `MULTI`/`EXEC`, multi-key Lua and others need one hash slot (`{hash-tags}`) | Every multi-key command, transaction and Lua script needs one hash slot |
+| Network / DNS | Port 10000, one hostname | Ports 10000 **and 8500–8599**; per-shard hostnames must resolve to the private endpoint (Infoblox) |
+| RediSearch | Required (forced automatically) | Not supported |
+| Change after creation | Not possible — new cache | Not possible — new cache |
+| Topologies | All | `HA`, `DR-ActivePassive`, `DR-ActiveActive` |
+
+Why `EnterpriseCluster` is the default everywhere: a `STANDALONE` dev cache
+and an `HA` prod cache then need the same client code, so promotion
+(`STANDALONE` in dev → `HA` in preprod/prod) needs no code change.
+
+What a consumer changes for each choice is spelled out for the intake UI
+in the onboarding template's `config/redis-intake-schema.json`
+(`x-client-guidance`).
+
+### Changing the clustering policy of an existing cache
+
+Treat the clustering policy as **create-time only**. The azurerm
+provider (4.x) applies a change by **deleting the database and creating
+it again — all data is lost — while `terraform plan` shows only
+`~ update in-place`**. A reviewer looking for `must be replaced` would
+never see it.
+
+So the module guards against it:
+
+1. Both cache resources have
+   `ignore_changes = [default_database[0].clustering_policy]`, so Terraform
+   never sends that change to the provider.
+2. A postcondition compares the cache's **actual** policy with the
+   requested one. On an existing cache they differ, so **the plan fails**,
+   naming the cache and both values. A new cache is built from config, so
+   it always passes.
+
+To keep the cache: set `clustering-policy` (request field
+`clustering_policy`) back to what it has. To change it on purpose:
+back up or export the data, set `deletion-protection-enabled = false`,
+keep the new value, run
+`terraform apply -replace='<address of azurerm_managed_redis.primary>'`
+(and `.dr[0]` for DR topologies), then reload the data and switch the
+application's client mode (cluster-aware for OSSCluster, standard for
+EnterpriseCluster).
+
+The same "in-place in the plan, data wiped at apply" behavior applies to
+`redis-modules` / `redis-module-args` and the geo-replication group —
+see "Redis modules".
+
+What a clustering policy change would do to an existing cache:
+
+| | Through Terraform (azurerm 4.x) — blocked by the guard | Recreating the cache (`-replace`) |
+|---|---|---|
+| Data | All lost (database deleted and re-created) | All lost |
+| Private endpoint / IP | Unchanged | Endpoint re-created; IP may change (Infoblox) |
+| Access keys | New (keys belong to the database) | New |
+| Client connections | Dropped | Dropped |
+| Hostname | Unchanged | Unchanged (same name) |
+
+### Upgrading existing caches to 0.5.0
+
+Caches created before 0.5.0 got their clustering policy **implicitly** from
+the old topology profile (`STANDALONE` → `NoCluster`, `HA`/`DR-*` →
+`OSSCluster`); their request files have no `clustering_policy`. Under 0.5.0
+they would resolve to `EnterpriseCluster`, the guard would fail their plan,
+and a failed plan blocks the whole workspace. So, **before** upgrading,
+the platform team adds the policy each cache already has to its request
+file — one line, no change in Azure:
+
+| Created as | Add to the request's `instance` |
+|---|---|
+| `STANDALONE` | `"clustering_policy": "NoCluster"` |
+| `HA`, `DR-ActivePassive`, `DR-ActiveActive` without RediSearch | `"clustering_policy": "OSSCluster"` |
+| Any topology with RediSearch | nothing (already `EnterpriseCluster`) |
+
+`NoCluster` is **legacy only**: never a default, not offered in the
+intake, and accepted only when stated explicitly, only for `STANDALONE`,
+and only on SKUs of 25 GB or less (otherwise the plan fails):
+
+| Series | Legacy NoCluster allowed |
+|---|---|
+| Balanced | `B0`, `B1`, `B3`, `B5`, `B10`, `B20` (1–24 GB) |
+| Compute Optimized | `X3`, `X5`, `X10`, `X20` (3–24 GB) |
+| Memory Optimized | `M10`, `M20` (12–24 GB) |
+| Flash Optimized | none |
+
+After pinning, every existing cache must plan as **0 to change, 0 to
+destroy**. Don't remove a request file to "skip" a cache: Terraform then
+plans to destroy it.
 
 ## Auth mode & TLS
 
@@ -241,9 +391,9 @@ or above, or a supported Memory, Compute or Flash SKU); see the
 
 | Modules requested | clustering-policy applied | eviction-policy applied |
 |---|---|---|
-| None | Topology default: STANDALONE → `NoCluster`; HA and both DR → `OSSCluster` | Input, or `AllKeysLRU` |
+| None | Input, or the topology default `EnterpriseCluster` | Input, or `AllKeysLRU` |
 | Includes RediSearch | **Forced `EnterpriseCluster`** (all topologies) | **Forced `NoEviction`**; an explicit conflicting input is overridden with a warning |
-| JSON / Bloom / TimeSeries only | Topology default, unchanged | Any allowed value, default `AllKeysLRU` |
+| JSON / Bloom / TimeSeries only | Input, or `EnterpriseCluster` | Any allowed value, default `AllKeysLRU` |
 
 Allowed eviction values: `AllKeysLRU`, `AllKeysLFU`, `AllKeysRandom`,
 `VolatileLRU`, `VolatileLFU`, `VolatileRandom`, `VolatileTTL`, `NoEviction`.
@@ -252,15 +402,15 @@ Allowed eviction values: `AllKeysLRU`, `AllKeysLFU`, `AllKeysRandom`,
 
 | Topology | redis-modules | Result |
 |---|---|---|
-| STANDALONE | `[]` | NoCluster, AllKeysLRU |
+| STANDALONE | `[]` | EnterpriseCluster, AllKeysLRU |
 | STANDALONE | `["RediSearch", "RedisJSON"]` | EnterpriseCluster, NoEviction |
-| STANDALONE | `["JSON", "Bloom"]` | NoCluster, input eviction or AllKeysLRU |
+| STANDALONE | `["JSON", "Bloom"]` | EnterpriseCluster, input eviction or AllKeysLRU |
 | HA | all four | EnterpriseCluster, NoEviction |
-| HA | `["TimeSeries"]` | OSSCluster, input eviction or AllKeysLRU |
+| HA | `["TimeSeries"]` | EnterpriseCluster (or OSSCluster input), input eviction or AllKeysLRU |
 | DR-ActivePassive | all four | EnterpriseCluster, NoEviction, on primary and DR |
-| DR-ActivePassive | `["Bloom"]` | OSSCluster, input eviction, on primary and DR |
+| DR-ActivePassive | `["Bloom"]` | EnterpriseCluster (or OSSCluster input), input eviction, on primary and DR |
 | DR-ActiveActive | `["RediSearch", "RedisJSON"]` | EnterpriseCluster, NoEviction, persistence forced off, on both caches |
-| DR-ActiveActive | `["JSON"]` | OSSCluster, input eviction, persistence forced off |
+| DR-ActiveActive | `["JSON"]` | EnterpriseCluster (or OSSCluster input), input eviction, persistence forced off |
 | DR-ActiveActive | anything with Bloom or TimeSeries | ❌ plan fails |
 
 **Tuning without recreating.** Module args are create-time defaults only;
@@ -285,10 +435,14 @@ strings (read-only or limited ACLs) on an instance with any module enabled;
 only full-access assignments work there.
 
 > ⚠️ **Create-time only.** Azure cannot load, unload or reconfigure a module
-> on a running instance. Adding, removing or changing a module, its args,
-> or the clustering policy (which RediSearch changes) on an existing
-> instance **destroys and recreates it, and all data is lost**. Treat it as
-> a migration. Always read the plan for `must be replaced` before applying.
+> on a running instance. Adding, removing or changing a module or its args
+> on an existing instance **deletes and re-creates its database, and all
+> data is lost**. With azurerm 4.x the plan shows this only as
+> `~ update in-place` on `default_database` — **not** `must be replaced` —
+> so review any diff in `module` blocks as data loss. Treat it as a
+> migration. Adding RediSearch to an existing non-Enterprise cache also
+> changes its clustering policy, which the clustering policy guard blocks
+> at plan (see "Changing the clustering policy of an existing cache").
 
 ## Persistence
 
@@ -300,7 +454,8 @@ persistence-aof-frequency = "1s"    # always | 1s
 
 Automatically forced to `DISABLED` when `deployment-topology =
 DR-ActiveActive` — check the `persistence-mode` output to confirm what
-actually got applied.
+actually got applied. Requires HA: `STANDALONE` with `RDB`/`AOF` fails the
+plan unless `high-availability-enabled = true`.
 
 ## Deletion protection
 
@@ -393,11 +548,17 @@ module "redis" {
   it against your installed provider version before depending on it.
 - No diagnostic settings / Log Analytics wiring yet.
 - No customer-managed key (CMK) encryption support yet.
-- `node-type` changes: scaling up within a tier is usually in place; Azure
-  may force replacement for a scale-down or a tier change, and never allows
-  moving to or from Flash.
-- `redis-modules` / `redis-module-args` changes force replacement of the
-  instance (Azure API behavior — modules are create-time only).
+- `node-type` changes: Azure can scale many SKUs in place, but the azurerm
+  provider marks `sku_name` as ForceNew, so through this module any
+  `node-type` change **replaces** the instance (the plan shows
+  `must be replaced`).
+- `redis-modules` / `redis-module-args` changes delete and re-create the
+  database (data loss) while the plan shows only an in-place update — see
+  the warning under "Redis modules". Only clustering-policy changes are
+  blocked by a guard today.
+- `high-availability-enabled` (STANDALONE HA on/off, or STANDALONE
+  without HA ↔ HA/DR) is ForceNew in azurerm: changing it replaces the
+  instance.
 - Module versions are managed by Azure; they can't be pinned or upgraded
   from this module.
 - `deletion-protection-enabled = true` does **not** stop a Terraform-driven
